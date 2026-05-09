@@ -77,8 +77,9 @@ export function TreeView({
   const statusFilter = useMemo(() => new Set(treeStatusFilter), [treeStatusFilter])
   const treeShowStatus = useTabStore((s) => s.treeShowStatus)
   const treeShowPriority = useTabStore((s) => s.treeShowPriority)
-  const treeShowSubtasks = useTabStore((s) => s.treeShowSubtasks)
-  const treeIncludeAllSubtasks = useTabStore((s) => s.treeIncludeAllSubtasks)
+  const treeSubtaskMode = useTabStore((s) => s.treeSubtaskMode)
+  const treeShowSubtasks = treeSubtaskMode !== 'hide'
+  const treeIncludeAllSubtasks = treeSubtaskMode === 'all'
   const treeCrossOutDone = useTabStore((s) => s.treeCrossOutDone)
   const treeShowWorktree = useTabStore((s) => s.treeShowWorktree)
   const treePinnedTaskIds = useTabStore((s) => s.treePinnedTaskIds)
