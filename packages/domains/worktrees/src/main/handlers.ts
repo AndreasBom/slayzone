@@ -91,7 +91,7 @@ import {
   getGhUser,
   editPrComment
 } from './gh-cli'
-import type { CreateWorktreeOpts, MergeWithAIResult, ConflictAnalysis, CreatePrInput, MergePrInput, EditPrCommentInput, WorktreeSubmoduleResult, CreateWorktreePhase, CreateWorktreePhaseEvent } from '../shared/types'
+import type { CreateWorktreeOpts, MergeWithAIResult, ConflictAnalysis, CreatePrInput, MergePrInput, EditPrCommentInput, WorktreeSubmoduleResult, CreateWorktreePhase, CreateWorktreePhaseEvent, ResolvedGraph, ForkGraphResult } from '../shared/types'
 
 import { readdir, stat as fsStat } from 'fs/promises'
 import path from 'path'
@@ -651,13 +651,39 @@ SUMMARY: <2-3 sentences explaining what each branch changed and why they conflic
   })
 
 
-  ipcMain.handle('git:getResolvedCommitDag', withResultDedup((_, path: string, limit: number, branches: string[] | undefined, baseBranch: string) => {
-    return getResolvedCommitDag(path, limit, branches, baseBranch)
-  }))
+  // Stable hash that excludes time-sensitive fields (relativeDate strings drift
+  // over time even when commits are identical — would defeat dedup).
+  const hashResolvedGraph = (g: ResolvedGraph | null): string => {
+    if (!g) return 'null'
+    return JSON.stringify({
+      baseBranch: g.baseBranch,
+      branches: g.branches,
+      commits: g.commits.map((c) => ({
+        h: c.hash, p: c.parents, b: c.branch,
+        r: c.branchRefs, t: c.tags,
+        bt: c.isBranchTip, hd: c.isHead, m: c.mergedFrom ?? null,
+      })),
+    })
+  }
+  const hashForkGraph = (r: ForkGraphResult | null): string => {
+    if (!r) return 'null'
+    return JSON.stringify({
+      forkPoint: r.forkPoint,
+      featureCount: r.featureCount,
+      baseCount: r.baseCount,
+      graph: hashResolvedGraph(r.graph),
+    })
+  }
 
-  ipcMain.handle('git:getResolvedForkGraph', withResultDedup((_, targetPath: string, repoPath: string, activeBranch: string, compareBranch: string, activeBranchLabel: string, compareBranchLabel: string) => {
-    return getResolvedForkGraph(targetPath, repoPath, activeBranch, compareBranch, activeBranchLabel, compareBranchLabel)
-  }))
+  ipcMain.handle('git:getResolvedCommitDag', withResultDedup(
+    (_, path: string, limit: number, branches: string[] | undefined, baseBranch: string) => getResolvedCommitDag(path, limit, branches, baseBranch),
+    { hashFn: hashResolvedGraph }
+  ))
+
+  ipcMain.handle('git:getResolvedForkGraph', withResultDedup(
+    (_, targetPath: string, repoPath: string, activeBranch: string, compareBranch: string, activeBranchLabel: string, compareBranchLabel: string) => getResolvedForkGraph(targetPath, repoPath, activeBranch, compareBranch, activeBranchLabel, compareBranchLabel),
+    { hashFn: hashForkGraph }
+  ))
 
   ipcMain.handle('git:getResolvedUpstreamGraph', (_, repoPath: string, branch: string) => {
     return getResolvedUpstreamGraph(repoPath, branch)

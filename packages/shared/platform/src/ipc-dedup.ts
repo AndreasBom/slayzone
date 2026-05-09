@@ -25,12 +25,19 @@ export function isIpcUnchangedSentinel(value: unknown): value is IpcUnchangedSen
 
 const UNCHANGED: IpcUnchangedSentinel = Object.freeze({ __ipc_unchanged__: true })
 
-interface DedupOptions {
+interface DedupOptions<R = unknown> {
   /**
    * Per-key entry cap. Defaults to 64 — enough for typical args (project paths,
    * branch names) without unbounded growth.
    */
   maxEntries?: number
+  /**
+   * Override the hash function used to compare results. Defaults to
+   * `JSON.stringify`. Provide a stable hash when the result contains
+   * time-sensitive fields (e.g. relative date strings) that drift over time
+   * but don't represent a real content change.
+   */
+  hashFn?: (result: R) => string
 }
 
 /**
@@ -50,9 +57,10 @@ interface DedupOptions {
  */
 export function withResultDedup<E, A extends unknown[], R>(
   handler: (event: E, ...args: A) => R | Promise<R>,
-  options: DedupOptions = {}
+  options: DedupOptions<R> = {}
 ): (event: E, ...args: A) => Promise<R | IpcUnchangedSentinel> {
   const maxEntries = options.maxEntries ?? 64
+  const hashFn = options.hashFn ?? ((r: R) => JSON.stringify(r))
   const cache = new Map<string, string>()
 
   return async (event: E, ...args: A): Promise<R | IpcUnchangedSentinel> => {
@@ -60,12 +68,12 @@ export function withResultDedup<E, A extends unknown[], R>(
 
     let argsKey: string
     try { argsKey = JSON.stringify(args) } catch { return result }
-    let resultJson: string
-    try { resultJson = JSON.stringify(result) } catch { return result }
+    let resultHash: string
+    try { resultHash = hashFn(result) } catch { return result }
 
-    if (cache.get(argsKey) === resultJson) return UNCHANGED
+    if (cache.get(argsKey) === resultHash) return UNCHANGED
 
-    cache.set(argsKey, resultJson)
+    cache.set(argsKey, resultHash)
     if (cache.size > maxEntries) {
       const oldestKey = cache.keys().next().value
       if (oldestKey !== undefined) cache.delete(oldestKey)
