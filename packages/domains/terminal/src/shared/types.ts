@@ -106,8 +106,11 @@ export type ExecutionContext =
   | { type: 'docker'; container: string; workdir?: string; shell?: string }
   | { type: 'ssh'; target: string; workdir?: string; shell?: string }
 
-// CLI activity states (more granular than TerminalState)
-export type ActivityState = 'working' | 'unknown'
+// CLI activity states (more granular than TerminalState).
+// `'idle'` is an EXPLICIT done-signal an adapter can emit to flip
+// running→idle immediately (e.g. claude completion stamp), bypassing
+// the silence-timer fallback.
+export type ActivityState = 'working' | 'idle' | 'unknown'
 
 // CLI error info
 export interface ErrorInfo {
