@@ -595,6 +595,8 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
   const devServerToastEnabledRef = useRef(true)
   const devServerAutoOpenRef = useRef(false)
   const devServerAutoOpenCallbackRef = useRef<((url: string) => void) | null>(null)
+  const devUrlToastDismissedRef = useRef<boolean>(!!task?.dev_url_toast_dismissed)
+  useEffect(() => { devUrlToastDismissedRef.current = !!task?.dev_url_toast_dismissed }, [task?.dev_url_toast_dismissed])
   const browserOpenRef = useRef(panelVisibility.browser)
   const gitPanelRef = useRef<UnifiedGitPanelHandle>(null)
   const [gitDefaultTab, setGitDefaultTab] = useState<GitTabId>(() => task?.git_active_tab ?? 'general')
@@ -657,6 +659,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
 
     const handleUrl = (url: string) => {
       if (browserOpenRef.current || devUrlDismissedRef.current.has(url)) return
+      if (devUrlToastDismissedRef.current) return
       devUrlDismissedRef.current.add(url)
       if (devServerAutoOpenRef.current) {
         devServerAutoOpenCallbackRef.current?.(url)
@@ -2008,7 +2011,13 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
           openDevServerInBrowser(detectedDevUrl)
           setDetectedDevUrl(null)
         }}
-        onDismiss={() => setDetectedDevUrl(null)}
+        onDismiss={() => {
+          setDetectedDevUrl(null)
+          if (task?.id) {
+            devUrlToastDismissedRef.current = true
+            void window.api.db.updateTask({ id: task.id, devUrlToastDismissed: true })
+          }
+        }}
       />}
 
       {/* Split view: terminal | browser | settings | git diff */}

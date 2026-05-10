@@ -2470,6 +2470,14 @@ const migrations: Migration[] = [
       // tab focus. Orthogonal to TerminalState (which is in-memory + per-PTY).
       db.exec(`ALTER TABLE tasks ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0`)
     }
+  },
+  {
+    version: 131,
+    up: (db) => {
+      // Per-task dismissal of the dev-server URL detected toast. Once dismissed,
+      // the toast never reappears for that task.
+      db.exec(`ALTER TABLE tasks ADD COLUMN dev_url_toast_dismissed INTEGER NOT NULL DEFAULT 0`)
+    }
   }
 ]
 
