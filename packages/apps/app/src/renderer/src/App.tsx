@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useState, useEffect, useRef, useMemo, useCallback, useTransition } from 'react'
 import { useGuardedHotkeys } from '@slayzone/ui'
 import { initShortcuts } from './shortcut-init'
-import { AlertTriangle, FolderClosed, LayoutGrid, TerminalSquare, GitBranch, FileCode, Cpu, Kanban, FlaskConical, Zap, BookOpen, Lock, Focus, MoreHorizontal, Settings, Trophy, BarChart3, Megaphone, ListTree, PanelLeftClose, Bell, Bot, Check, Monitor } from 'lucide-react'
+import { AlertTriangle, FolderClosed, LayoutGrid, TerminalSquare, GitBranch, FileCode, Cpu, Kanban, FlaskConical, Zap, BookOpen, Lock, Focus, MoreHorizontal, Settings, Trophy, BarChart3, Megaphone, ListTree, PanelLeftClose, PanelTopOpen, Bell, Bot, Check, Monitor } from 'lucide-react'
 import { buildCreateTaskDraftFromBrowserLink } from '@slayzone/task/shared'
 import type { Task } from '@slayzone/task/shared'
 import type { Project, ColumnConfig } from '@slayzone/projects/shared'
@@ -49,7 +49,7 @@ import {
   UpdateButton,
   UpdateToast
 } from '@slayzone/ui'
-import { SidebarProvider, cn, PanelToggle, useUndo, matchesShortcut, useShortcutStore, shortcutDefinitions, useShortcutDisplay, withShortcut, withModalGuard, scopeTracker, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@slayzone/ui'
+import { SidebarProvider, cn, PanelToggle, useUndo, matchesShortcut, useShortcutStore, shortcutDefinitions, useShortcutDisplay, withShortcut, withModalGuard, scopeTracker, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from '@slayzone/ui'
 import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { useChangelogAutoOpen } from '@/components/changelog/useChangelogAutoOpen'
 import { useStaleSkillCount } from '@slayzone/ai-config/client'
@@ -1257,6 +1257,9 @@ function App(): React.JSX.Element {
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent side="top" align="end" className="min-w-[240px]">
+            <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+              Layout
+            </DropdownMenuLabel>
             <DropdownMenuItem
               onSelect={() => setExplodeMode((p) => !p)}
               disabled={openTaskIds.length < 2}
@@ -1267,6 +1270,9 @@ function App(): React.JSX.Element {
               {explodeMode && <Check className="size-4 col-start-3" />}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+              Panels
+            </DropdownMenuLabel>
             <DropdownMenuItem
               onSelect={() => useDialogStore.getState().openTerminals()}
               className="cursor-pointer"
@@ -1310,6 +1316,9 @@ function App(): React.JSX.Element {
               {agentStatusState.isLocked && <Check className="size-4 col-start-3" />}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+              Insights
+            </DropdownMenuLabel>
             <DropdownMenuItem
               onSelect={() => useTabStore.getState().setActiveView('leaderboard')}
               className="cursor-pointer"
@@ -1332,6 +1341,9 @@ function App(): React.JSX.Element {
               <span>What's New</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+              Sidebar
+            </DropdownMenuLabel>
             <DropdownMenuItem
               onSelect={() => useTabStore.getState().setSidebarView('tree')}
               className="cursor-pointer"
@@ -1347,6 +1359,17 @@ function App(): React.JSX.Element {
               <Kanban className="size-4" />
               <span>Projects view</span>
               {sidebarView === 'projects' && <Check className="size-4 col-start-3" />}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault()
+                useTabStore.getState().setTreeShowHeader(!treeShowHeader)
+              }}
+              className="cursor-pointer"
+            >
+              <PanelTopOpen className="size-4" />
+              <span>Show header</span>
+              {treeShowHeader && <Check className="size-4 col-start-3" />}
             </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={(e) => {

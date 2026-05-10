@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
-import { ChevronDown, Clock, GitBranch, Home, Pin, Power, Search, Settings, X } from 'lucide-react'
+import { ChevronDown, Clock, GitBranch, Home, Pin, Plus, Power, Search, Settings, X } from 'lucide-react'
 import * as Collapsible from '@radix-ui/react-collapsible'
 import { cn, TerminalProgressDot, PriorityIcon, getColumnStatusStyle, TASK_STATUS_ORDER, Tooltip, TooltipContent, TooltipTrigger, useShortcutDisplay } from '@slayzone/ui'
 import { type Task } from '@slayzone/task/shared'
 import { useDialogStore, useTabStore } from '@slayzone/settings'
 import { useFilterStateMap, sortTasks, getViewConfig } from '@slayzone/tasks'
 import { useActiveSessionTaskIds } from '@/components/agent-status/useIdleTasks'
+import { TreeDisplaySettings } from '../TreeDisplaySettings'
 import type { SidebarViewContext } from './types'
 
 // Tree guide layout (mirrors EditorToc / ManagerSidebar).
@@ -534,6 +535,21 @@ export function TreeView({
             <span className="shrink-0 text-[10px] text-muted-foreground/50">{searchShortcut}</span>
           )}
         </button>
+      </div>
+      <div className="flex items-end justify-between gap-1.5 px-2 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+        <span className="leading-none pb-1">Projects</span>
+        <div className="flex items-end gap-1">
+          <TreeDisplaySettings />
+          <button
+            type="button"
+            aria-label="Add project"
+            title="Add project"
+            onClick={() => useDialogStore.getState().openCreateProject()}
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+          >
+            <Plus className="size-3.5" />
+          </button>
+        </div>
       </div>
       {visibleProjects.map(renderProject)}
       {hiddenProjects.length > 0 && (

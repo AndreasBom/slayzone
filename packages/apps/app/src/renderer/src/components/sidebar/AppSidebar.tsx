@@ -16,8 +16,6 @@ import type { OnboardingChecklistState } from '@/hooks/useOnboardingChecklist'
 import { SidebarFooterIcons } from './SidebarFooterIcons'
 import { SidebarViewSwitcher } from './SidebarViewSwitcher'
 import { SidebarResizeHandle } from './SidebarResizeHandle'
-import { TreeStatusFilter } from './TreeStatusFilter'
-import { TreeDisplaySettings } from './TreeDisplaySettings'
 import { getView } from './views/registry'
 import logo from '@/assets/logo.svg'
 
@@ -129,8 +127,8 @@ export function AppSidebar({
       )}
     >
       {sidebarView === 'tree' && (
-        <div className="absolute top-0 left-0 right-0 h-11 flex items-center justify-end gap-1 pr-3 z-20">
-          <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 pointer-events-none select-none text-xs font-medium tracking-wide text-foreground">
+        <div className="absolute top-0 left-0 right-0 h-11 flex items-center justify-center gap-1 pr-3 z-20 pointer-events-none">
+          <div className="flex items-center gap-1 select-none text-xs font-medium tracking-wide text-foreground">
             <span>Slay</span>
             <img
               src={logo}
@@ -141,8 +139,6 @@ export function AppSidebar({
             />
             <span>Zone</span>
           </div>
-          <TreeStatusFilter />
-          <TreeDisplaySettings />
         </div>
       )}
       <SidebarContent className="pb-4 pt-11 scrollbar-hide">
