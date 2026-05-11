@@ -118,7 +118,7 @@ import { BlobStore, betterSqliteTxn, seedInitialVersions } from '@slayzone/task-
 import { getExtensionFromTitle } from '@slayzone/task/shared'
 import { registerTagHandlers } from '@slayzone/tags/main'
 import { registerSettingsHandlers, registerThemeHandlers } from '@slayzone/settings/main'
-import { registerPtyHandlers, registerUsageHandlers, killAllPtys, killPtysByTaskId, onTaskReachedTerminal, startIdleChecker, stopIdleChecker, syncTerminalModes, getPtyPids, onSessionChange, onGlobalStateChange, onPtyInputSubmit, registerChatHandlers, shutdownChatTransports, setOnHostKillHandler, broadcastRespawnRequest, backfillChatModes, hasSessionUserInput, markSessionUserInput, clearSessionUserInputMark, notifyGlobalStateListeners, sweepScrollbackOrphans } from '@slayzone/terminal/main'
+import { registerPtyHandlers, registerUsageHandlers, killAllPtys, killPtysByTaskId, onTaskReachedTerminal, startIdleChecker, stopIdleChecker, syncTerminalModes, getPtyPids, onSessionChange, onGlobalStateChange, onPtyInputSubmit, registerChatHandlers, shutdownChatTransports, setOnHostKillHandler, broadcastRespawnRequest, backfillChatModes, hasSessionUserInput, markSessionUserInput, clearSessionUserInputMark, notifyGlobalStateListeners } from '@slayzone/terminal/main'
 import { setProviderLastKilledAt, type ProviderConfig } from '@slayzone/task/shared'
 import { attachFloatingGlobalAgentPanel, setupFloatingGlobalAgentPanel } from './floating-global-agent-panel'
 import { attachTaskWindows, setupTaskWindows } from './task-windows'
@@ -1225,22 +1225,6 @@ app.whenReady().then(async () => {
   registerPtyHandlers(ipcMain, db)
   logBoot('pty handlers registered')
 
-  // Sweep orphan scrollback archives whose task or tab no longer exists.
-  // Runs once at startup; cheap (single readdir per task).
-  void sweepScrollbackOrphans(
-    (taskId) => {
-      try {
-        const row = db.prepare('SELECT 1 FROM tasks WHERE id = ? AND deleted_at IS NULL').get(taskId)
-        return !!row
-      } catch { return true }
-    },
-    (taskId, tabId) => {
-      try {
-        const row = db.prepare('SELECT 1 FROM terminal_tabs WHERE id = ? AND task_id = ?').get(tabId, taskId)
-        return !!row
-      } catch { return true }
-    },
-  )
   setupFloatingGlobalAgentPanel(() => currentOverrides)
   setupTaskWindows()
   logBoot('floating global agent panel + task windows set up')
