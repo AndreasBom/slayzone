@@ -286,7 +286,6 @@ export interface ElectronAPI {
     getTasksByProject: (projectId: string) => Promise<Task[]>
     getTask: (id: string) => Promise<Task | null>
     getSubTasks: (parentId: string) => Promise<Task[]>
-    getSubTasksRecursive: (rootId: string) => Promise<Task[]>
     createTask: (data: CreateTaskInput) => Promise<Task>
     updateTask: (data: UpdateTaskInput) => Promise<Task>
     updateTasks: (data: { ids: string[]; updates: Omit<Partial<UpdateTaskInput>, 'id'> }) => Promise<Task[]>

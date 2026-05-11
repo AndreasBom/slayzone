@@ -49,7 +49,6 @@ import {
   getBlockingOp,
   getByProjectOp,
   getSubTasksOp,
-  getSubTasksRecursiveOp,
   getTaskOp,
   loadBoardDataOp,
   removeBlockerOp,
@@ -134,7 +133,6 @@ export function registerTaskHandlers(ipcMain: IpcMain, db: Database, onMutation?
   ipcMain.handle('db:tasks:get', (_, id: string) => getTaskOp(db, id))
   ipcMain.handle('db:tasks:create', (_, data: CreateTaskInput) => createTaskOp(db, data, deps))
   ipcMain.handle('db:tasks:getSubTasks', (_, parentId: string) => getSubTasksOp(db, parentId))
-  ipcMain.handle('db:tasks:getSubTasksRecursive', (_, rootId: string) => getSubTasksRecursiveOp(db, rootId))
   ipcMain.handle('db:tasks:update', (_, data: UpdateTaskInput) => updateTaskOp(db, data, deps))
   ipcMain.handle('db:tasks:updateMany', (_, data: UpdateManyTasksInput) => updateManyTasksOp(db, data, deps))
   ipcMain.handle('db:tasks:delete', (_, id: string) => deleteTaskOp(db, id, deps))
