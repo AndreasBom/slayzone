@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import Database from 'better-sqlite3'
 import { DB_PRAGMAS } from '@slayzone/platform'
+import { selfHealDiagnosticsDb, scheduleSalvageMergeForAll } from '@slayzone/diagnostics/main'
 import fs from 'fs'
 import path from 'path'
 
@@ -26,7 +27,12 @@ const getDiagnosticsDatabasePath = (): string => {
 export function getDiagnosticsDatabase(): Database.Database {
   if (!diagDb) {
     const dbPath = getDiagnosticsDatabasePath()
+    selfHealDiagnosticsDb(dbPath)
     diagDb = new Database(dbPath)
+    // auto_vacuum MUST be set before any table exists. No-op for pre-existing
+    // DBs — they need `VACUUM` to convert. Fresh DBs (or self-heal rotations)
+    // get incremental_vacuum capability so retention can reclaim disk pages.
+    diagDb.pragma('auto_vacuum = INCREMENTAL')
     diagDb.pragma('journal_mode = WAL')
     diagDb.exec(`
       CREATE TABLE IF NOT EXISTS diagnostics_events (
@@ -49,6 +55,7 @@ export function getDiagnosticsDatabase(): Database.Database {
       CREATE INDEX IF NOT EXISTS idx_diag_trace ON diagnostics_events(trace_id);
       CREATE INDEX IF NOT EXISTS idx_diag_source_event_ts ON diagnostics_events(source, event, ts_ms);
     `)
+    scheduleSalvageMergeForAll(() => diagDb, dbPath)
   }
   return diagDb
 }

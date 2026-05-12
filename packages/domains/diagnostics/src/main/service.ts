@@ -31,31 +31,12 @@ const DEFAULT_CONFIG: DiagnosticsConfig = {
 
 const IPC_PAYLOAD_SKIP_CHANNELS = new Set(['pty:write', 'pty:getBufferSince', 'pty:getBuffer'])
 
-// High-frequency / low-signal channels — skip the request+response log entries
-// entirely. Listener still runs; only the diagnostics writes are dropped.
-// Without this the autocomplete poll loop alone produces ~80 IPC events/sec
-// → 160 sync sqlite inserts/sec → multi-GB diag DBs in days.
-const IPC_LOG_SKIP_CHANNELS = new Set([
-  'chat:listFiles',
-  'chat:listSkills',
-  'chat:listCommands',
-  'chat:listAgents',
-  'git:isGitRepo',
-  'git:getCurrentBranch',
-  'git:getRemoteUrl',
-  'git:getStatusSummary',
-  'git:getAheadBehindUpstream',
-  'git:getResolvedCommitDag',
-  'git:resolveChildBranches',
-  'git:getDiffStats',
-  'db:tasks:getSubTasks',
-  'db:artifactFolders:getByTask',
-  'db:artifacts:getByTask',
-  'db:taskTags:getForTask',
-  'db:loadBoardData',
-  'session:getState',
-  'files:pathExists',
-])
+// Write-batching tunables. Inserts go through a bounded in-memory queue and
+// flush periodically inside a single transaction — main process never blocks
+// per-event. Errors flush immediately so failures persist on crash.
+const WRITE_BATCH_SIZE = 1000
+const WRITE_FLUSH_INTERVAL_MS = 2_000
+const WRITE_QUEUE_CAP = 5_000
 const CRITICAL_SETTINGS_KEYS = new Set([
   'theme',
   'shell',
@@ -76,6 +57,15 @@ let cachedConfig: DiagnosticsConfig | null = null
 // unbounded memory if registration never happens.
 const PENDING_EVENTS_CAP = 1000
 const pendingEvents: DiagnosticEvent[] = []
+
+// Post-registration write queue — drained periodically into a single
+// transaction. Bounded so a runaway producer can't OOM the process.
+const writeQueue: DiagnosticEvent[] = []
+let flushTimer: NodeJS.Timeout | null = null
+// Count of events dropped due to WRITE_QUEUE_CAP since last successful flush.
+// Surfaced as a single `diag.dropped` event so spikes are observable instead
+// of silent. Reset to 0 once the synthetic event is enqueued.
+let droppedSinceLastFlush = 0
 
 const electronRuntime = electron as unknown as Partial<typeof import('electron')>
 const app = electronRuntime.app as App | undefined
@@ -206,44 +196,100 @@ export function recordDiagnosticEvent(event: DiagnosticEvent): void {
     return
   }
 
-  // DB closed during shutdown — drop the event. Avoids fatal exception when
-  // an uncaughtException handler tries to log post-close. Diagnostics during
-  // shutdown are best-effort.
-  if (!diagnosticsDb.open) return
+  // DB may be transiently closed (test rewire, shutdown race). Keep queueing —
+  // flushWriteQueue will hold the batch until DB is available or drop on cap.
+  // Surfaces backpressure via the diag.dropped event rather than silent loss.
 
   const config = getDiagnosticsConfig()
   if (!config.enabled) return
 
   if (!config.verbose && event.level === 'debug') return
 
-  const payloadJson = buildPayloadJson(event.payload)
+  // Stamp ts at enqueue time so chronological order survives batch reordering.
+  const stamped: DiagnosticEvent = { ...event, tsMs: event.tsMs ?? Date.now() }
+
+  if (writeQueue.length >= WRITE_QUEUE_CAP) {
+    // Hard cap: drop newest under load rather than OOM. Count the drop so a
+    // subsequent flush can surface it as a single diag.dropped event.
+    droppedSinceLastFlush++
+    return
+  }
+  writeQueue.push(stamped)
+
+  // Errors are signal — flush now so a subsequent crash doesn't lose them.
+  if (stamped.level === 'error') {
+    flushWriteQueue()
+    return
+  }
+
+  if (writeQueue.length >= WRITE_BATCH_SIZE) {
+    flushWriteQueue()
+    return
+  }
+
+  if (!flushTimer) {
+    flushTimer = setTimeout(flushWriteQueue, WRITE_FLUSH_INTERVAL_MS)
+  }
+}
+
+export function flushWriteQueue(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  if (writeQueue.length === 0 && droppedSinceLastFlush === 0) return
+  if (!diagnosticsDb || !diagnosticsDb.open) {
+    // Hold the queue — DB may come back. Cap stops unbounded growth; once
+    // cap is hit, drop counter takes over.
+    return
+  }
+
+  const batch = writeQueue.splice(0, writeQueue.length)
+
+  // Surface accumulated cap-drops as a single warn event. Reset the counter
+  // here so a failed flush doesn't double-emit on retry — re-accumulation
+  // restarts from 0.
+  if (droppedSinceLastFlush > 0) {
+    batch.unshift({
+      level: 'warn',
+      source: 'diagnostics',
+      event: 'diag.dropped',
+      tsMs: Date.now(),
+      message: `Dropped ${droppedSinceLastFlush} events at queue cap`,
+      payload: { droppedCount: droppedSinceLastFlush, queueCap: WRITE_QUEUE_CAP }
+    })
+    droppedSinceLastFlush = 0
+  }
 
   try {
-    diagnosticsDb
-      .prepare(`
-        INSERT INTO diagnostics_events (
-          id, ts_ms, level, source, event, trace_id, task_id, project_id,
-          session_id, channel, message, payload_json, redaction_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        event.id ?? crypto.randomUUID(),
-        event.tsMs ?? Date.now(),
-        event.level,
-        event.source,
-        event.event,
-        event.traceId ?? null,
-        event.taskId ?? null,
-        event.projectId ?? null,
-        event.sessionId ?? null,
-        event.channel ?? null,
-        event.message ?? null,
-        payloadJson,
-        REDACTION_VERSION
-      )
+    const stmt = diagnosticsDb.prepare(`
+      INSERT INTO diagnostics_events (
+        id, ts_ms, level, source, event, trace_id, task_id, project_id,
+        session_id, channel, message, payload_json, redaction_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const txn = diagnosticsDb.transaction((events: DiagnosticEvent[]) => {
+      for (const event of events) {
+        stmt.run(
+          event.id ?? crypto.randomUUID(),
+          event.tsMs ?? Date.now(),
+          event.level,
+          event.source,
+          event.event,
+          event.traceId ?? null,
+          event.taskId ?? null,
+          event.projectId ?? null,
+          event.sessionId ?? null,
+          event.channel ?? null,
+          event.message ?? null,
+          buildPayloadJson(event.payload),
+          REDACTION_VERSION
+        )
+      }
+    })
+    txn(batch)
   } catch {
-    // Race: DB may close between the .open check and .prepare. Swallow —
-    // diagnostics must never escalate to fatal.
+    // Race: DB may close mid-flush. Swallow — diagnostics must never escalate to fatal.
   }
 }
 
@@ -379,11 +425,14 @@ function instrumentIpcMain(ipcMain: IpcMain): void {
       const startedAt = Date.now()
       const traceId = buildTraceId(channel, startedAt)
       const includePayload = !IPC_PAYLOAD_SKIP_CHANNELS.has(channel)
-      const logRequestResponse = !IPC_LOG_SKIP_CHANNELS.has(channel)
 
-      if (logRequestResponse) {
+      // ipc.request / ipc.response are debug-level: dropped unless `verbose`.
+      // Cheap path — verbose flag is cached. Skip payload building when off.
+      const traceIpc = getDiagnosticsConfig().verbose
+
+      if (traceIpc) {
         recordDiagnosticEvent({
-          level: 'info',
+          level: 'debug',
           source: 'ipc',
           event: 'ipc.request',
           traceId,
@@ -395,9 +444,9 @@ function instrumentIpcMain(ipcMain: IpcMain): void {
 
       try {
         const result = await listener(event, ...args)
-        if (logRequestResponse) {
+        if (traceIpc) {
           recordDiagnosticEvent({
-            level: 'info',
+            level: 'debug',
             source: 'ipc',
             event: 'ipc.response',
             traceId,
@@ -531,6 +580,10 @@ async function runExport(request: DiagnosticsExportRequest): Promise<Diagnostics
   if (!diagnosticsDb) {
     return { success: false, error: 'Diagnostics database not initialized' }
   }
+
+  // Drain queued events so the export reflects the latest state, not whatever
+  // happened to land in the DB before the periodic flush ran.
+  flushWriteQueue()
 
   const fromTsMs = Math.max(0, request.fromTsMs)
   const toTsMs = Math.max(fromTsMs, request.toTsMs)
@@ -730,5 +783,6 @@ export function registerProcessDiagnostics(electronApp: App): void {
 }
 
 export function stopDiagnostics(): void {
+  flushWriteQueue()
   stopRetentionScheduler()
 }

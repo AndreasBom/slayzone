@@ -11,6 +11,7 @@ export type DiagnosticSource =
   | 'settings'
   | 'db'
   | 'usage'
+  | 'diagnostics'
 
 export interface DiagnosticEvent {
   id?: string
