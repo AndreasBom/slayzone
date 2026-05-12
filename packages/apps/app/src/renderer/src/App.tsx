@@ -1420,6 +1420,13 @@ function App(): React.JSX.Element {
           onTaskClick={openTask} onCloseTab={closeTabByTaskId} onOpenTaskInBackground={(id) => useTabStore.getState().openTaskInBackground(id)} zenMode={zenMode} onboardingChecklist={onboardingChecklist} idleByProject={idleByProject} onReorderProjects={reorderProjects}
           terminalStates={terminalStates} taskProgress={taskProgress} doneTaskIds={doneTaskIds} columnsByProjectId={columnsByProjectId}
           compactFooter={headerHidden ? compactFooterContent : undefined}
+          updateState={
+            updateDownloadPercent != null
+              ? { phase: 'downloading', percent: updateDownloadPercent, version: updateVersion }
+              : updateVersion
+                ? { phase: 'ready', version: updateVersion, onRestart: () => window.api.app.restartForUpdate() }
+                : null
+          }
           taskContextMenuRender={(task, child) => (
             <TaskContextMenu
               task={task}

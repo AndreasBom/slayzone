@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -40,6 +41,63 @@ interface AppSidebarProps {
   doneTaskIds?: Set<string>
   columnsByProjectId?: Map<string, ColumnConfig[] | null>
   compactFooter?: ReactNode
+  updateState?: UpdateState | null
+}
+
+type UpdateState =
+  | { phase: 'downloading'; percent: number; version: string | null }
+  | { phase: 'ready'; version: string; onRestart: () => void }
+
+function UpdateStatusCard({ state }: { state: UpdateState }) {
+  const [restarting, setRestarting] = useState(false)
+  const downloading = state.phase === 'downloading'
+  const disabled = downloading || restarting
+  const handleClick = () => {
+    if (state.phase !== 'ready' || restarting) return
+    setRestarting(true)
+    state.onRestart()
+  }
+  const showSpinner = downloading || restarting
+  return (
+    <div className="px-2">
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={disabled}
+        className={cn(
+          'relative w-full flex items-center gap-2.5 rounded-md border border-border bg-surface-2 px-3 py-2 text-left transition-colors overflow-hidden',
+          state.phase === 'ready' && !restarting ? 'hover:bg-surface-3' : 'cursor-default'
+        )}
+      >
+        {showSpinner ? (
+          <Loader2 className="size-3 text-green-500 animate-spin shrink-0" />
+        ) : (
+          <span className="relative flex size-2 shrink-0">
+            <span className="absolute inset-0 rounded-full bg-green-500 opacity-75 animate-ping" />
+            <span className="relative rounded-full bg-green-500 size-2" />
+          </span>
+        )}
+        <span className="flex flex-col leading-tight flex-1 min-w-0">
+          <span className="text-xs font-medium text-foreground">
+            {downloading ? 'Downloading update' : restarting ? 'Restarting…' : 'Update ready'}
+          </span>
+          <span className="text-[10px] text-muted-foreground tabular-nums">
+            {downloading ? `${state.percent}%` : restarting ? 'Installing' : 'Click to restart'}
+          </span>
+        </span>
+        {state.version && (
+          <span className="shrink-0 rounded-full bg-green-500/15 text-green-500 px-2 py-0.5 text-[10px] font-medium tabular-nums">v{state.version}</span>
+        )}
+        {downloading && (
+          <span
+            aria-hidden
+            className="absolute bottom-0 left-0 h-0.5 bg-green-500 transition-[width] duration-300"
+            style={{ width: `${state.percent}%` }}
+          />
+        )}
+      </button>
+    </div>
+  )
 }
 
 export function AppSidebar({
@@ -64,6 +122,7 @@ export function AppSidebar({
   doneTaskIds,
   columnsByProjectId,
   compactFooter,
+  updateState,
 }: AppSidebarProps) {
   const sidebarView = useTabStore((s) => s.sidebarView)
   const setSidebarView = useTabStore((s) => s.setSidebarView)
@@ -192,6 +251,7 @@ export function AppSidebar({
             )}
           </>
         )}
+        {updateState && <UpdateStatusCard state={updateState} />}
       </SidebarFooter>
       {isResizable && effectiveWidth != null && (
         <SidebarResizeHandle
