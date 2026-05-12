@@ -257,7 +257,9 @@ test('task_started: sub-agent event carries toolUseId + description', () => {
     })
   )
   if (!ev || ev.kind !== 'sub-agent') throw new Error('expected sub-agent')
-  expect(ev.phase).toBe('started')
+  // All task_* system events map to 'in-flight' — completion is anchored on the
+  // outer Task tool's tool-result (contract-guaranteed) in the reducer.
+  expect(ev.phase).toBe('in-flight')
   expect(ev.toolUseId).toBe('tu_42')
   expect(ev.description).toBe('Find chat history parsing logic')
 })
@@ -274,7 +276,8 @@ test('task_notification: sub-agent event carries status + usage', () => {
     })
   )
   if (!ev || ev.kind !== 'sub-agent') throw new Error('expected sub-agent')
-  expect(ev.phase).toBe('notification')
+  // Notification is enrichment only; phase stays in-flight until tool-result.
+  expect(ev.phase).toBe('in-flight')
   expect(ev.toolUseId).toBe('tu_42')
   expect(ev.status).toBe('completed')
   expect(ev.usage?.totalTokens).toBe(63119)

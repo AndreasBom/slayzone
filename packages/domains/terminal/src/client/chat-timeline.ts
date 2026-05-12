@@ -37,9 +37,15 @@ export type TimelineItem =
   | { kind: 'rate-limit'; status: string; timestamp: number; parentToolUseId?: string }
   | {
       kind: 'sub-agent'
-      /** Pairs `started` with the matching `notification`. One row per Task call. */
+      /** Pairs enrichment events + the outer Task tool-result to one row. */
       toolUseId: string
-      phase: 'started' | 'updated' | 'notification'
+      /**
+       * Semantic state. `'in-flight'` while any `task_*` system event is the
+       * latest signal; flips to `'completed'`/`'failed'` only when the outer
+       * Task tool's `tool-result` arrives (or on interrupt / process-exit
+       * heal). Decouples UI from SDK subtype strings.
+       */
+      phase: 'in-flight' | 'completed' | 'failed'
       description?: string
       status?: string
       summary?: string
@@ -373,9 +379,10 @@ function applyEvent(state: ChatTimelineState, event: AgentEvent): ChatTimelineSt
       // replay reconstructs the boundary even if the renderer was offline.
       if (!isInFlight(state)) return state
       const item: TimelineItem = { kind: 'interrupted', timestamp: ts }
+      const failed = failInFlightSubAgents(state, 'interrupted')
       return {
-        ...state,
-        timeline: [...state.timeline, item],
+        ...failed,
+        timeline: [...failed.timeline, item],
         resultCount: state.resultCount + 1,
         // Defensive: clear any straggling stream state so the typing indicator
         // can't read "Writing…" off a half-open block once the turn is gone.
@@ -693,7 +700,11 @@ function applyEvent(state: ChatTimelineState, event: AgentEvent): ChatTimelineSt
     case 'stream-message-stop':
       return { ...state, currentStreamMessageId: null, openBlocks: new Map() }
     case 'tool-result': {
-      const idx = state.toolIndex.get(event.toolUseId)
+      // Canonical sub-agent completion signal. Every Task tool_use → exactly
+      // one tool_result by SDK contract; closing the sub-agent row here is
+      // immune to optional/advisory system events being missing or renamed.
+      const baseState = closeSubAgentForToolResult(state, event)
+      const idx = baseState.toolIndex.get(event.toolUseId)
       if (idx === undefined) {
         const invocation: ToolInvocation = {
           id: event.toolUseId,
@@ -703,13 +714,13 @@ function applyEvent(state: ChatTimelineState, event: AgentEvent): ChatTimelineSt
           result: { rawContent: event.rawContent, structured: event.structured, isError: event.isError },
         }
         const item: TimelineItem = { kind: 'tool', invocation, timestamp: ts, parentToolUseId: event.parentToolUseId }
-        const newIndex = new Map(state.toolIndex)
-        newIndex.set(event.toolUseId, state.timeline.length)
-        const childIndex = registerChild(state, state.timeline.length, event.parentToolUseId)
-        return { ...state, timeline: [...state.timeline, item], toolIndex: newIndex, childIndex }
+        const newIndex = new Map(baseState.toolIndex)
+        newIndex.set(event.toolUseId, baseState.timeline.length)
+        const childIndex = registerChild(baseState, baseState.timeline.length, event.parentToolUseId)
+        return { ...baseState, timeline: [...baseState.timeline, item], toolIndex: newIndex, childIndex }
       }
-      const target = state.timeline[idx]
-      if (target.kind !== 'tool') return state
+      const target = baseState.timeline[idx]
+      if (target.kind !== 'tool') return baseState
       const nextInvocation: ToolInvocation = {
         ...target.invocation,
         status: event.isError ? 'error' : 'done',
@@ -719,9 +730,9 @@ function applyEvent(state: ChatTimelineState, event: AgentEvent): ChatTimelineSt
           isError: event.isError,
         },
       }
-      const nextTimeline = state.timeline.slice()
+      const nextTimeline = baseState.timeline.slice()
       nextTimeline[idx] = { ...target, invocation: nextInvocation }
-      return { ...state, timeline: nextTimeline }
+      return { ...baseState, timeline: nextTimeline }
     }
     case 'result': {
       // Collect this turn's assistant text (back to the last user-text or start) for Copy.
@@ -797,19 +808,28 @@ function applyEvent(state: ChatTimelineState, event: AgentEvent): ChatTimelineSt
         timeline: [...state.timeline, { kind: 'rate-limit', status: event.status, timestamp: ts }],
       }
     case 'sub-agent': {
-      // Pair `started` + later `notification` (same tool_use_id) into ONE
-      // timeline row that fills in description / status / usage as events
-      // arrive. Avoids the prior "sub-agent: started" + "sub-agent: notification"
-      // double-row that read like a status banner with no content.
+      // Every `task_*` system event is treated as enrichment of an in-flight
+      // row. The row is closed (→ 'completed'/'failed') only by the outer Task
+      // tool's `tool-result` event — see `case 'tool-result'` below. This
+      // anchors completion on a contract-guaranteed signal, immune to
+      // missing/renamed/reshaped `task_notification` events.
+      //
+      // Back-compat: persisted events from before the rename carry legacy
+      // phase strings ('started'/'updated'/'notification'). Normalize to
+      // 'in-flight' on intake so replay still works — tool-result events
+      // were also persisted, so they re-close the row.
+      const incomingPhase = normalizeSubAgentPhase(event.phase)
       const id = event.toolUseId
       const existingIdx = id ? state.subAgentIndex.get(id) : undefined
       if (existingIdx !== undefined) {
         const target = state.timeline[existingIdx]
         if (target?.kind === 'sub-agent') {
+          // Don't regress a terminal state. Late notification after tool-result
+          // is rare but possible (out-of-order delivery).
+          const isTerminal = target.phase === 'completed' || target.phase === 'failed'
           const next: TimelineItem = {
             ...target,
-            // Latest phase wins so the renderer can show "in flight" vs "done".
-            phase: event.phase,
+            phase: isTerminal ? target.phase : incomingPhase,
             description: event.description ?? target.description,
             status: event.status ?? target.status,
             summary: event.summary ?? target.summary,
@@ -825,7 +845,7 @@ function applyEvent(state: ChatTimelineState, event: AgentEvent): ChatTimelineSt
       const item: TimelineItem = {
         kind: 'sub-agent',
         toolUseId: id,
-        phase: event.phase,
+        phase: incomingPhase,
         description: event.description,
         status: event.status,
         summary: event.summary,
@@ -938,13 +958,66 @@ export function isAwaitingUserQuestion(state: ChatTimelineState): boolean {
 function healOrphanedTurn(state: ChatTimelineState, ts: number): ChatTimelineState {
   if (!isInFlight(state)) return state
   const item: TimelineItem = { kind: 'interrupted', timestamp: ts }
+  const failed = failInFlightSubAgents(state, 'interrupted')
   return {
-    ...state,
-    timeline: [...state.timeline, item],
+    ...failed,
+    timeline: [...failed.timeline, item],
     resultCount: state.userMessagesSent,
     openBlocks: state.openBlocks.size > 0 ? new Map() : state.openBlocks,
     currentStreamMessageId: null,
   }
+}
+
+/**
+ * If `event` is the `tool-result` for an in-flight sub-agent's outer Task
+ * call, flip its phase to `'completed'`/`'failed'`. This is the canonical
+ * close signal — the SDK guarantees one tool_result per tool_use.
+ */
+function closeSubAgentForToolResult(
+  state: ChatTimelineState,
+  event: ToolResultEvent,
+): ChatTimelineState {
+  const idx = state.subAgentIndex.get(event.toolUseId)
+  if (idx === undefined) return state
+  const row = state.timeline[idx]
+  if (row?.kind !== 'sub-agent' || row.phase !== 'in-flight') return state
+  const closed: TimelineItem = {
+    ...row,
+    phase: event.isError ? 'failed' : 'completed',
+    status: row.status ?? (event.isError ? 'failed' : 'completed'),
+  }
+  const t = state.timeline.slice()
+  t[idx] = closed
+  return { ...state, timeline: t }
+}
+
+/**
+ * Back-compat normalizer for stored `SubAgentEvent.phase`. Persisted events
+ * from before the semantic rename carry legacy CLI subtype strings
+ * (`'started'|'updated'|'notification'`). All map to `'in-flight'` on intake;
+ * the canonical close signal is the outer Task tool's `tool-result`.
+ */
+function normalizeSubAgentPhase(phase: string): 'in-flight' | 'completed' | 'failed' {
+  if (phase === 'completed' || phase === 'failed') return phase
+  return 'in-flight'
+}
+
+/**
+ * Flip every still-in-flight sub-agent row to `'failed'` with the given status
+ * label. Used by the interrupt / process-exit / orphan-heal paths so a Stop
+ * press or subprocess crash mid-Task can't leave the row spinning forever
+ * (the outer `tool-result` that would normally close it never arrives).
+ */
+function failInFlightSubAgents(state: ChatTimelineState, statusLabel: string): ChatTimelineState {
+  let nextTimeline: TimelineItem[] | null = null
+  for (const idx of state.subAgentIndex.values()) {
+    const row = state.timeline[idx]
+    if (row?.kind !== 'sub-agent') continue
+    if (row.phase !== 'in-flight') continue
+    if (!nextTimeline) nextTimeline = state.timeline.slice()
+    nextTimeline[idx] = { ...row, phase: 'failed', status: row.status ?? statusLabel }
+  }
+  return nextTimeline ? { ...state, timeline: nextTimeline } : state
 }
 
 /**

@@ -234,8 +234,8 @@ export function UnknownBlock({ item }: { item: Extract<TimelineItem, { kind: 'un
 
 export function SubAgentRow({ item }: { item: Extract<TimelineItem, { kind: 'sub-agent' }> }) {
   const { collapseSignal, timeline, childIndex } = useChatView()
-  const inFlight = item.phase !== 'notification'
-  const errored = item.status === 'failed' || item.status === 'error'
+  const inFlight = item.phase === 'in-flight'
+  const errored = item.phase === 'failed' || item.status === 'failed' || item.status === 'error'
   const seconds = item.durationMs != null ? (item.durationMs / 1000).toFixed(1) : null
   const tokens = item.totalTokens != null ? formatTokens(item.totalTokens) : null
 

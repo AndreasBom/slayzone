@@ -180,8 +180,15 @@ export interface CompactBoundaryEvent {
 
 export interface SubAgentEvent {
   kind: 'sub-agent'
-  phase: 'started' | 'updated' | 'notification'
-  /** SDK tool_use_id of the parent Task call. Pairs `started` with subsequent `notification`. */
+  /**
+   * Semantic state, decoupled from CLI subtype names. Adapter maps every
+   * `task_*` system event → `'in-flight'`; the reducer flips to `'completed'`
+   * or `'failed'` only when the outer `Task` tool's `tool-result` arrives
+   * (the contract-guaranteed completion signal). Interrupt / process-exit
+   * heal paths also flip to `'failed'`.
+   */
+  phase: 'in-flight' | 'completed' | 'failed'
+  /** SDK tool_use_id of the parent Task call. Pairs `started` with subsequent enrichment events + the outer tool-result. */
   toolUseId: string
   /** Set when this sub-agent was spawned by another sub-agent (nested Task). */
   parentToolUseId?: string

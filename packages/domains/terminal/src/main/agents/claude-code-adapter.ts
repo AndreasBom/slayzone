@@ -240,11 +240,14 @@ function parseSystem(obj: Record<string, unknown>, parent: string | undefined): 
             durationMs: toNum(usageRaw.duration_ms),
           }
         : undefined
+    // All three `task_*` system events map to the same semantic state:
+    // 'in-flight'. The sub-agent row is closed (→ 'completed'/'failed') by the
+    // outer Task tool's `tool-result`, which is contract-guaranteed (every
+    // tool_use → exactly one tool_result). Notification is kept purely as
+    // enrichment for usage stats. See chat-timeline reducer for the close.
     return {
       kind: 'sub-agent',
-      phase: subtype === 'task_started' ? 'started'
-        : subtype === 'task_updated' ? 'updated'
-        : 'notification',
+      phase: 'in-flight',
       toolUseId: (obj.tool_use_id as string) ?? '',
       parentToolUseId: parent,
       description: typeof obj.description === 'string' ? obj.description : undefined,

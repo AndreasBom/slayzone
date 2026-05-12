@@ -529,24 +529,25 @@ test('signature_delta flips hasSignature on thinking item', () => {
   expect(thinking[0].hasSignature).toBe(true)
 })
 
-test('sub-agent: paired started + notification merges into ONE timeline row', () => {
+test('sub-agent: enrichment events accumulate on one row while in-flight', () => {
   let s = initialState()
   s = reducer(s, { type: 'event', event: ev.turnInit() })
   s = reducer(s, {
     type: 'event',
     event: {
       kind: 'sub-agent',
-      phase: 'started',
+      phase: 'in-flight',
       toolUseId: 'tu_a',
       description: 'Investigate X',
       raw: {},
     },
   })
+  // Later `task_notification` arrives as another in-flight event carrying usage.
   s = reducer(s, {
     type: 'event',
     event: {
       kind: 'sub-agent',
-      phase: 'notification',
+      phase: 'in-flight',
       toolUseId: 'tu_a',
       status: 'completed',
       summary: 'Investigate X',
@@ -562,7 +563,148 @@ test('sub-agent: paired started + notification merges into ONE timeline row', ()
   expect(subAgents[0].toolUses).toBe(5)
   expect(subAgents[0].durationMs).toBe(6789)
   expect(subAgents[0].totalTokens).toBe(1234)
-  expect(subAgents[0].phase).toBe('notification')
+  // Phase is still in-flight — only the outer Task tool-result closes the row.
+  expect(subAgents[0].phase).toBe('in-flight')
+})
+
+test('sub-agent: tool-result for the outer Task closes the row to completed', () => {
+  let s = initialState()
+  s = reducer(s, { type: 'event', event: ev.turnInit() })
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'tu_TASK', description: 'X', raw: {} },
+  })
+  // Outer Task's tool-result arrives — canonical completion signal.
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'tool-result', toolUseId: 'tu_TASK', isError: false, rawContent: 'done', structured: null },
+  })
+  const subAgents = s.timeline.filter((i) => i.kind === 'sub-agent')
+  expect(subAgents.length).toBe(1)
+  if (subAgents[0].kind !== 'sub-agent') throw new Error('wrong')
+  expect(subAgents[0].phase).toBe('completed')
+})
+
+test('sub-agent: tool-result with isError closes the row to failed', () => {
+  let s = initialState()
+  s = reducer(s, { type: 'event', event: ev.turnInit() })
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'tu_FAIL', description: 'broken', raw: {} },
+  })
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'tool-result', toolUseId: 'tu_FAIL', isError: true, rawContent: 'boom', structured: null },
+  })
+  const sub = s.timeline.find((i) => i.kind === 'sub-agent')
+  if (!sub || sub.kind !== 'sub-agent') throw new Error('missing')
+  expect(sub.phase).toBe('failed')
+})
+
+test('sub-agent: closes via tool-result even without any task_notification', () => {
+  // Regression for stuck spinner — CLI may omit task_notification entirely for some sub-agents.
+  let s = initialState()
+  s = reducer(s, { type: 'event', event: ev.turnInit() })
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'tu_NO_NOTIF', description: 'orphan', raw: {} },
+  })
+  // No notification — go straight to tool-result.
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'tool-result', toolUseId: 'tu_NO_NOTIF', isError: false, rawContent: 'ok', structured: null },
+  })
+  const sub = s.timeline.find((i) => i.kind === 'sub-agent')
+  if (!sub || sub.kind !== 'sub-agent') throw new Error('missing')
+  expect(sub.phase).toBe('completed')
+})
+
+test('sub-agent: late notification after tool-result does not regress phase', () => {
+  let s = initialState()
+  s = reducer(s, { type: 'event', event: ev.turnInit() })
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'tu_OOO', description: 'ooo', raw: {} },
+  })
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'tool-result', toolUseId: 'tu_OOO', isError: false, rawContent: 'ok', structured: null },
+  })
+  // Late `task_notification` carrying usage arrives AFTER close.
+  s = reducer(s, {
+    type: 'event',
+    event: {
+      kind: 'sub-agent',
+      phase: 'in-flight',
+      toolUseId: 'tu_OOO',
+      status: 'completed',
+      usage: { totalTokens: 100, toolUses: 1, durationMs: 5 },
+      raw: {},
+    },
+  })
+  const sub = s.timeline.find((i) => i.kind === 'sub-agent')
+  if (!sub || sub.kind !== 'sub-agent') throw new Error('missing')
+  expect(sub.phase).toBe('completed')
+  expect(sub.totalTokens).toBe(100)
+})
+
+test('sub-agent: interrupt flips in-flight rows to failed', () => {
+  // Send a user message so isInFlight() is true (interrupted is a no-op otherwise).
+  let s = initialState()
+  s = reducer(s, { type: 'event', event: ev.turnInit() })
+  s = reducer(s, { type: 'user-sent', text: 'go' })
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'tu_INT', description: 'mid', raw: {} },
+  })
+  s = reducer(s, { type: 'event', event: { kind: 'interrupted' } })
+  const sub = s.timeline.find((i) => i.kind === 'sub-agent')
+  if (!sub || sub.kind !== 'sub-agent') throw new Error('missing')
+  expect(sub.phase).toBe('failed')
+  expect(sub.status).toBe('interrupted')
+})
+
+test('sub-agent: process-exit while in-flight heals the spinner', () => {
+  let s = initialState()
+  s = reducer(s, { type: 'event', event: ev.turnInit() })
+  s = reducer(s, { type: 'user-sent', text: 'go' })
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'tu_EXIT', description: 'crashy', raw: {} },
+  })
+  s = reducer(s, { type: 'event', event: { kind: 'process-exit', code: 1, signal: null } })
+  const sub = s.timeline.find((i) => i.kind === 'sub-agent')
+  if (!sub || sub.kind !== 'sub-agent') throw new Error('missing')
+  expect(sub.phase).toBe('failed')
+})
+
+test('sub-agent: legacy persisted phase strings normalize to in-flight on replay', () => {
+  // Persisted events from before the semantic rename carry legacy CLI subtype
+  // strings. Replay must still produce correct final state — tool-result was
+  // persisted alongside and re-closes the row.
+  let s = initialState()
+  s = reducer(s, { type: 'event', event: ev.turnInit() })
+  s = reducer(s, {
+    type: 'event',
+    // Cast: legacy events on disk have these phase strings, current type doesn't allow them.
+    event: { kind: 'sub-agent', phase: 'started', toolUseId: 'tu_LEG', description: 'leg', raw: {} } as unknown as AgentEvent,
+  })
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'sub-agent', phase: 'notification', toolUseId: 'tu_LEG', status: 'completed', raw: {} } as unknown as AgentEvent,
+  })
+  // Legacy notification → still in-flight (canonical close = tool-result).
+  let sub = s.timeline.find((i) => i.kind === 'sub-agent')
+  if (!sub || sub.kind !== 'sub-agent') throw new Error('missing')
+  expect(sub.phase).toBe('in-flight')
+  // Replay the tool-result that was also persisted → closes correctly.
+  s = reducer(s, {
+    type: 'event',
+    event: { kind: 'tool-result', toolUseId: 'tu_LEG', isError: false, rawContent: 'ok', structured: null },
+  })
+  sub = s.timeline.find((i) => i.kind === 'sub-agent')
+  if (!sub || sub.kind !== 'sub-agent') throw new Error('missing')
+  expect(sub.phase).toBe('completed')
 })
 
 test('sub-agent: distinct toolUseIds get their own rows', () => {
@@ -570,11 +712,11 @@ test('sub-agent: distinct toolUseIds get their own rows', () => {
   s = reducer(s, { type: 'event', event: ev.turnInit() })
   s = reducer(s, {
     type: 'event',
-    event: { kind: 'sub-agent', phase: 'started', toolUseId: 'a', description: 'A', raw: {} },
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'a', description: 'A', raw: {} },
   })
   s = reducer(s, {
     type: 'event',
-    event: { kind: 'sub-agent', phase: 'started', toolUseId: 'b', description: 'B', raw: {} },
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'b', description: 'B', raw: {} },
   })
   const subAgents = s.timeline.filter((i) => i.kind === 'sub-agent')
   expect(subAgents.length).toBe(2)
@@ -585,7 +727,7 @@ test('sub-agent children: parentToolUseId on tool-call routes into childIndex', 
   s = reducer(s, { type: 'event', event: ev.turnInit() })
   s = reducer(s, {
     type: 'event',
-    event: { kind: 'sub-agent', phase: 'started', toolUseId: 'tu_TASK', description: 'find', raw: {} },
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'tu_TASK', description: 'find', raw: {} },
   })
   // Sub-agent's inner tool call carries parent_tool_use_id pointing at the Task.
   s = reducer(s, {
@@ -617,7 +759,7 @@ test('sub-agent children: assistant-text + thinking are routed by parentToolUseI
   s = reducer(s, { type: 'event', event: ev.turnInit() })
   s = reducer(s, {
     type: 'event',
-    event: { kind: 'sub-agent', phase: 'started', toolUseId: 'tu_TASK', description: 'reason', raw: {} },
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'tu_TASK', description: 'reason', raw: {} },
   })
   s = reducer(s, {
     type: 'event',
@@ -650,13 +792,13 @@ test('sub-agent children: nested sub-agent inside sub-agent registers under oute
   s = reducer(s, { type: 'event', event: ev.turnInit() })
   s = reducer(s, {
     type: 'event',
-    event: { kind: 'sub-agent', phase: 'started', toolUseId: 'tu_OUTER', description: 'outer', raw: {} },
+    event: { kind: 'sub-agent', phase: 'in-flight', toolUseId: 'tu_OUTER', description: 'outer', raw: {} },
   })
   s = reducer(s, {
     type: 'event',
     event: {
       kind: 'sub-agent',
-      phase: 'started',
+      phase: 'in-flight',
       toolUseId: 'tu_INNER',
       description: 'inner',
       parentToolUseId: 'tu_OUTER',
