@@ -504,6 +504,7 @@ export interface ElectronAPI {
   }
   window: {
     close: () => Promise<void>
+    setTrafficLightPosition: (pos: { x: number; y: number } | null) => Promise<void>
   }
   files: {
     saveTempImage: (

@@ -1186,6 +1186,13 @@ function App(): React.JSX.Element {
   }, [projects, openProjectSettings])
 
   const headerHidden = sidebarView === 'tree' && !treeShowHeader
+  // Tree view: align with the top icon row.
+  // Projects rail: align horizontally with project cards + vertically with the
+  //   TabBar (default x=10 sits near the rail's icon center at ~36px).
+  useEffect(() => {
+    const pos = sidebarView === 'tree' ? { x: 24, y: 26 } : { x: 16, y: 20 }
+    window.api.window.setTrafficLightPosition(pos)
+  }, [sidebarView])
   const activePtyCount = usePtyStatus().size
   const renderHeaderActions = (compact: boolean) => {
     const btnSize = compact ? "h-7 w-7" : "size-10 rounded-lg"

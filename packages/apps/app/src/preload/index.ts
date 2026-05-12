@@ -399,7 +399,9 @@ const api: ElectronAPI = {
     }
   },
   window: {
-    close: () => ipcRenderer.invoke('window:close')
+    close: () => ipcRenderer.invoke('window:close'),
+    setTrafficLightPosition: (pos: { x: number; y: number } | null) =>
+      ipcRenderer.invoke('window:set-traffic-light-position', pos)
   },
   files: {
     saveTempImage: (base64, mimeType) => ipcRenderer.invoke('files:saveTempImage', base64, mimeType),
@@ -821,6 +823,8 @@ const api: ElectronAPI = {
       ipcRenderer.invoke('ai-config:needs-sync', projectId, projectPath),
     getProjectStaleSkillCount: (projectId, projectPath) =>
       ipcRenderer.invoke('ai-config:get-project-stale-skill-count', projectId, projectPath),
+    getProjectsStaleSkillCounts: (pairs) =>
+      ipcRenderer.invoke('ai-config:get-projects-stale-skill-counts', pairs),
     syncAll: (input) =>
       ipcRenderer.invoke('ai-config:sync-all', input),
     checkSyncStatus: (projectId, projectPath) =>

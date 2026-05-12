@@ -1713,6 +1713,17 @@ div{text-align:center}h1{font-size:14px;font-weight:500;color:#aaa}p{font-size:1
     if (win) win.close()
   })
 
+  // Adjust macOS traffic-light position. Pass null to restore default.
+  ipcMain.handle(
+    'window:set-traffic-light-position',
+    (event, pos: { x: number; y: number } | null) => {
+      if (process.platform !== 'darwin') return
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win) return
+      win.setWindowButtonPosition(pos ?? { x: 10, y: 12 })
+    }
+  )
+
   // Dialog
   ipcMain.handle(
     'dialog:showOpenDialog',
