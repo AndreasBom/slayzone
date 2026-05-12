@@ -652,7 +652,7 @@ type AskQuestion = {
 export function ToolCallAskUserQuestion({ invocation }: ToolProps) {
   const input = invocation.input as { questions?: AskQuestion[] } | null
   const questions = input?.questions ?? []
-  const { sendMessage, permissionRequests, respondPermission, timeline, collapseSignal } = useChatView()
+  const { sendMessage, permissionRequests, respondPermission, abortAgent, timeline, collapseSignal } = useChatView()
   // Latest AskUserQuestion in the timeline stays expanded; older ones auto-collapse
   // when a newer ask appears. User can still toggle manually.
   const isLatestAsk = useMemo(() => {
@@ -788,10 +788,20 @@ export function ToolCallAskUserQuestion({ invocation }: ToolProps) {
     if (sendMessage) sendMessage(text)
   }
 
+  // Cancel = interrupt the agent. Same path as the Stop button: clear
+  // queued messages, abort the in-flight turn (kill+respawn). Skip the
+  // permission-deny/sendMessage paths when abortAgent is wired since the
+  // session dies anyway. Fallback (harness, no abortAgent): preserve old
+  // behavior so the question still resolves cleanly.
+  const canCancel = Boolean(abortAgent) || canRespond
   const handleCancel = (): void => {
-    if (!canRespond || locked) return
+    if (!canCancel || locked) return
     setSubmittedText('Cancelled')
     setAnswered(true)
+    if (abortAgent) {
+      void abortAgent()
+      return
+    }
     if (pendingPrompt && respondPermission) {
       void respondPermission({
         requestId: pendingPrompt.requestId,
@@ -949,10 +959,10 @@ export function ToolCallAskUserQuestion({ invocation }: ToolProps) {
                   <button
                     type="button"
                     onClick={handleCancel}
-                    disabled={!canRespond}
+                    disabled={!canCancel}
                     className={cn(
                       'shrink-0 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
-                      canRespond
+                      canCancel
                         ? 'border-border/60 bg-background/60 hover:bg-destructive/10 hover:border-destructive/40 hover:text-destructive text-muted-foreground'
                         : 'border-border/40 bg-muted/30 text-muted-foreground cursor-not-allowed',
                     )}

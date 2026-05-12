@@ -64,6 +64,13 @@ export interface ChatViewState {
       | { behavior: 'deny'; message: string; interrupt?: boolean }
   }) => Promise<boolean>
   /**
+   * Interrupt the running agent + clear queued messages. Same path as the
+   * Stop button. Inline cancel flows (e.g. AskUserQuestion's Cancel) call
+   * this so dismissing a question kills the turn instead of just denying
+   * the tool. Undefined in harness contexts → callers fall back.
+   */
+  abortAgent?: () => Promise<void>
+  /**
    * Full flat timeline + parent→children index, exposed so SubAgentRow can
    * render the items emitted while it ran (parentToolUseId === toolUseId).
    * Empty defaults are safe for harnesses that don't construct sub-agents.

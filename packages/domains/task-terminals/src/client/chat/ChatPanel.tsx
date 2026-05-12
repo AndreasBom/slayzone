@@ -355,12 +355,16 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
       sendToolResult,
       permissionRequests,
       respondPermission,
+      abortAgent: async () => {
+        void clearQueue()
+        await abortAndPop()
+      },
       timeline,
       childIndex: state.childIndex,
       onOpenUrl,
       onOpenFile: handleOpenFile,
     }),
-    [collapseSignal, finalOnly, appearance.chatFileEditsOpenByDefault, appearance.chatShowMessageMeta, search.query, search.caseSensitive, handleModeChange, sendMessage, sendToolResult, permissionRequests, respondPermission, timeline, state.childIndex, onOpenUrl, handleOpenFile],
+    [collapseSignal, finalOnly, appearance.chatFileEditsOpenByDefault, appearance.chatShowMessageMeta, search.query, search.caseSensitive, handleModeChange, sendMessage, sendToolResult, permissionRequests, respondPermission, abortAndPop, clearQueue, timeline, state.childIndex, onOpenUrl, handleOpenFile],
   )
 
   // Autosize textarea. Height follows scrollHeight up to 240px; no artificial min —
