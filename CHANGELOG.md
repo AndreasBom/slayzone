@@ -1,6 +1,42 @@
 # Changelog
 
 
+## v0.29.2
+
+[compare changes](https://github.com/debuglebowski/slayzone/compare/v0.29.1...v0.29.2)
+
+### 🚀 Enhancements
+
+- **chat:** AskUserQuestion Cancel interrupts the agent ([df1af873](https://github.com/debuglebowski/slayzone/commit/df1af873))
+- **sidebar:** Show update download progress + restart card ([32b214dc](https://github.com/debuglebowski/slayzone/commit/32b214dc))
+- **sidebar:** Clarify "Show all" → "Show all projects" ([e624b318](https://github.com/debuglebowski/slayzone/commit/e624b318))
+- **task:** Auto-promote temporary task on rename ([17e0e4c5](https://github.com/debuglebowski/slayzone/commit/17e0e4c5))
+- **cli:** Expose tab titles + add slay pty rename ([f6e04a37](https://github.com/debuglebowski/slayzone/commit/f6e04a37))
+- **chat:** Show msg timestamp on hover ([60a14f4e](https://github.com/debuglebowski/slayzone/commit/60a14f4e))
+- **sidebar:** Align tree header w/ tabbar + shrink icons ([1ea7ea18](https://github.com/debuglebowski/slayzone/commit/1ea7ea18))
+- **terminal:** Multi-chunk gate for working detection ([8942c3e3](https://github.com/debuglebowski/slayzone/commit/8942c3e3))
+- **cli:** Tasks update --worktree-path links worktree to task ([a836f904](https://github.com/debuglebowski/slayzone/commit/a836f904))
+
+### 🩹 Fixes
+
+- **tabs:** Disable drag while renaming tab title ([c75d6425](https://github.com/debuglebowski/slayzone/commit/c75d6425))
+- **chat:** Anchor sub-agent completion on Task tool-result ([f15e54f8](https://github.com/debuglebowski/slayzone/commit/f15e54f8))
+- **chat:** Gate autocomplete hover until mouse moves ([ddc7c632](https://github.com/debuglebowski/slayzone/commit/ddc7c632))
+- **terminal:** Require spinner verb to detect claude working ([94710238](https://github.com/debuglebowski/slayzone/commit/94710238))
+- **ipc:** Scope dedup cache per-sender to survive renderer reload ([787f1b5a](https://github.com/debuglebowski/slayzone/commit/787f1b5a))
+
+### 💅 Refactors
+
+- **sidebar:** Drop tree header toggle ([78af73f1](https://github.com/debuglebowski/slayzone/commit/78af73f1))
+
+### 🏡 Chore
+
+- **nix:** Update sources to 0.29.1 ([5b61dd0a](https://github.com/debuglebowski/slayzone/commit/5b61dd0a))
+
+### ❤️ Contributors
+
+- Debuglebowski
+
 ## v0.29.1
 
 [compare changes](https://github.com/debuglebowski/slayzone/compare/v0.29.0...v0.29.1)

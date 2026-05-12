@@ -1,5 +1,72 @@
 [
   {
+    "version": "0.29.2",
+    "date": "2026-05-12",
+    "tagline": "Update flow, chat polish",
+    "items": [
+      {
+        "category": "feature",
+        "title": "Sidebar shows update download progress + restart card",
+        "description": "When a new app update is downloading, the sidebar now surfaces live progress and prompts you to restart once it's ready."
+      },
+      {
+        "category": "feature",
+        "title": "CLI: rename PTY sessions and read tab titles",
+        "description": "New slay pty rename command sets a tab title from the CLI, and tab titles are now exposed via the CLI for scripting."
+      },
+      {
+        "category": "feature",
+        "title": "CLI: link a worktree to a task",
+        "description": "slay tasks update --worktree-path now binds an existing worktree to a task without recreating it."
+      },
+      {
+        "category": "improvement",
+        "title": "Chat: Cancel actually interrupts the agent",
+        "description": "Cancelling an AskUserQuestion prompt now interrupts the running agent instead of just dismissing the prompt."
+      },
+      {
+        "category": "improvement",
+        "title": "Sidebar polish",
+        "description": "Tree header aligned with the tabbar with smaller icons, the standalone tree-header toggle is gone, and \"Show all\" is now \"Show all projects\" for clarity."
+      },
+      {
+        "category": "improvement",
+        "title": "Renaming a temporary task auto-promotes it",
+        "description": "Editing a temp task's title now promotes it to a permanent task automatically, no extra step required."
+      },
+      {
+        "category": "improvement",
+        "title": "Chat: message timestamp on hover",
+        "description": "Hover a chat message to see its exact timestamp."
+      },
+      {
+        "category": "fix",
+        "title": "Terminal: more accurate \"agent working\" detection",
+        "description": "Claude-working detection now requires the spinner verb across multiple chunks, eliminating false positives that flipped tasks to working when they weren't."
+      },
+      {
+        "category": "fix",
+        "title": "IPC: dedup cache survives renderer reload",
+        "description": "The IPC dedup cache is now scoped per-sender so reloading the renderer no longer drops events that look like duplicates."
+      },
+      {
+        "category": "fix",
+        "title": "Chat: sub-agent completion anchors correctly",
+        "description": "Sub-agent runs now mark completion on the Task tool-result instead of mid-stream, so sub-task panels close at the right moment."
+      },
+      {
+        "category": "fix",
+        "title": "Chat: autocomplete no longer flickers under the cursor",
+        "description": "Autocomplete hover is gated until the mouse moves, so the popup doesn't preselect an item just because the cursor happened to sit over it."
+      },
+      {
+        "category": "fix",
+        "title": "Tabs: drag disabled while renaming",
+        "description": "You can no longer accidentally drag a tab while its title is in rename mode."
+      }
+    ]
+  },
+  {
     "version": "0.29.1",
     "date": "2026-05-12",
     "tagline": "Sidebar polish, diagnostics rescue",
