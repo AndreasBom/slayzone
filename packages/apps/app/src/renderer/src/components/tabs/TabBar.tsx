@@ -164,7 +164,8 @@ function SortableTab({
   inputRef
 }: SortableTabProps): React.JSX.Element {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: tab.taskId
+    id: tab.taskId,
+    disabled: isEditing
   })
 
   const inGroup = groupPosition === 'middle' || groupPosition === 'last'
