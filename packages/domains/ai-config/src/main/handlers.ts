@@ -1727,7 +1727,7 @@ export function registerAiConfigHandlers(ipcMain: IpcMain, db: Database): void {
     return false
   })
 
-  ipcMain.handle('ai-config:get-project-stale-skill-count', (_event, projectId: string, projectPath: string): number => {
+  const computeStaleSkillCount = (projectId: string, projectPath: string): number => {
     const providers = getEnabledProviders(projectId)
     if (providers.length === 0) return 0
     const enabledSet = new Set(providers)
@@ -1749,7 +1749,22 @@ export function registerAiConfigHandlers(ipcMain: IpcMain, db: Database): void {
       if (state.syncHealth === 'stale') stale += 1
     }
     return stale
-  })
+  }
+
+  ipcMain.handle('ai-config:get-project-stale-skill-count', (_event, projectId: string, projectPath: string): number =>
+    computeStaleSkillCount(projectId, projectPath)
+  )
+
+  ipcMain.handle(
+    'ai-config:get-projects-stale-skill-counts',
+    (_event, pairs: Array<{ projectId: string; projectPath: string }>): Record<string, number> => {
+      const out: Record<string, number> = {}
+      for (const { projectId, projectPath } of pairs) {
+        out[projectId] = computeStaleSkillCount(projectId, projectPath)
+      }
+      return out
+    }
+  )
 
   ipcMain.handle('ai-config:sync-all', (_event, input: SyncAllInput) => {
     const resolvedProject = path.resolve(input.projectPath)

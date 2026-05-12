@@ -888,6 +888,9 @@ export interface ElectronAPI {
     setProjectProviders: (projectId: string, providers: CliProvider[]) => Promise<void>
     needsSync: (projectId: string, projectPath: string) => Promise<boolean>
     getProjectStaleSkillCount: (projectId: string, projectPath: string) => Promise<number>
+    getProjectsStaleSkillCounts: (
+      pairs: Array<{ projectId: string; projectPath: string }>
+    ) => Promise<Record<string, number>>
     syncAll: (input: SyncAllInput) => Promise<SyncResult>
     checkSyncStatus: (projectId: string, projectPath: string) => Promise<SyncConflict[]>
     getLibraryInstructions: (variantId?: string) => Promise<string>
