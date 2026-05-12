@@ -8,8 +8,12 @@ import { KITTY_SHIFT_ENTER, ENTER } from '@slayzone/terminal/shared'
  */
 // Bullet glyphs Claude TUI uses to mark spinner / progress / completion lines.
 const BULLET = '[·✻✽✶✳✢]'
-const BULLET_LINE_RE = new RegExp(`^${BULLET}`)
-const COMPLETION_TAIL_RE = /\bfor \d+[smh]/
+// Spinner lines pair the bullet with a present-participle verb ("Cogitating",
+// "Cooking", "Thinking", ...). Requiring `\S*ing\b` after the bullet rejects
+// chrome lines that also start with `·`/`✻` but lack a live verb (menu items,
+// status footers, scrolled history). Case-insensitive for safety.
+const SPINNER_LINE_RE = new RegExp(`^${BULLET}\\s+\\S*ing\\b`, 'i')
+const COMPLETION_LINE_RE = new RegExp(`^${BULLET}.*\\bfor \\d+[smh]`)
 
 export class ClaudeAdapter implements TerminalAdapter {
   readonly mode = 'claude-code' as const
@@ -49,9 +53,8 @@ export class ClaudeAdapter implements TerminalAdapter {
     let sawCompletion = false
     for (const raw of stripped.split(/\r?\n/)) {
       const line = raw.trimStart()
-      if (!BULLET_LINE_RE.test(line)) continue
-      if (COMPLETION_TAIL_RE.test(line)) sawCompletion = true
-      else sawLiveSpinner = true
+      if (COMPLETION_LINE_RE.test(line)) sawCompletion = true
+      else if (SPINNER_LINE_RE.test(line)) sawLiveSpinner = true
     }
 
     if (sawLiveSpinner) return 'working'

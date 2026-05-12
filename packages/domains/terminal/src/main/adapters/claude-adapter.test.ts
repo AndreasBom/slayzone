@@ -85,6 +85,17 @@ test('only completion stamps in chunk → idle (history redraw at rest)', () => 
   expect(adapter.detectActivity(chunk, 'unknown')).toBe('idle')
 })
 
+test('chrome bullet without spinner verb → null (no phantom working)', () => {
+  // TUI chrome (menus, footers, history scroll) may render bullet glyphs as
+  // list markers / decoration. These must NOT promote idle → running, or
+  // the silence timer 5s later flips back to idle and triggers a phantom
+  // attention notification.
+  expect(adapter.detectActivity('· Help', 'unknown')).toBe(null)
+  expect(adapter.detectActivity('✻ Settings', 'unknown')).toBe(null)
+  expect(adapter.detectActivity('· Press Esc to interrupt', 'unknown')).toBe(null)
+  expect(adapter.detectActivity('· Recent commit · main · 3 changes', 'unknown')).toBe(null)
+})
+
 console.log('\nClaudeAdapter.detectPrompt\n')
 
 test('detects Y/n as permission prompt', () => {
