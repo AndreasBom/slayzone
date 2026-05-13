@@ -184,6 +184,16 @@ export interface ChatTimelineState {
    * the first `session-spawn` arrives (legacy buffers without the event).
    */
   currentSpawnId: string | null
+  /**
+   * True when the session has never spawned a subprocess in this tab's
+   * lifetime (lazy-mount or post-reset state). Flipped to false on the first
+   * `session-spawn` event — i.e. the kernel has started a real process.
+   * Distinct from `sessionEnded` which marks an exited process: `notStarted`
+   * is "never began", `sessionEnded` is "ran and then died". Drives the
+   * ChatPanel indicator so a fresh tab with persisted history doesn't show
+   * "Session ended, click to restart" — there's nothing to restart yet.
+   */
+  notStarted: boolean
 }
 
 export function initialState(): ChatTimelineState {
@@ -209,6 +219,7 @@ export function initialState(): ChatTimelineState {
     bgShellOrder: [],
     bgShellPollIndex: new Map(),
     currentSpawnId: null,
+    notStarted: true,
   }
 }
 
@@ -913,12 +924,18 @@ function applyEvent(state: ChatTimelineState, event: AgentEvent): ChatTimelineSt
       // even if no turn-init has fired yet (idle agent waiting for user msg).
       // Without this, "Session ended" sticks in the UI after restart until
       // the first user message triggers turn-init.
+      //
+      // Flip `notStarted` off — the OS subprocess is now running. ChatPanel
+      // uses `notStarted` to suppress the "Session ended, click to restart"
+      // banner on hydrate-only tabs (where `sessionEnded` is false but no
+      // process has started yet).
       return {
         ...state,
         currentSpawnId: event.spawnId,
         sessionEnded: false,
         exitCode: null,
         exitSignal: null,
+        notStarted: false,
       }
   }
 }

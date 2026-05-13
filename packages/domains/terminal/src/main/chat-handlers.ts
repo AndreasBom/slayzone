@@ -1,19 +1,22 @@
 import type { IpcMain } from 'electron'
 import type { Database } from 'better-sqlite3'
 import {
-  createChat,
+  hydrateSession,
+  ensureSpawned,
   sendUserMessage,
   sendToolResult,
   sendControlRequest,
   respondToPermissionRequest,
   updateSessionChatMode,
   updateSessionChatModel,
+  updateSessionChatEffort,
   kill as killChat,
   removeSession,
   recordInterrupted,
   popLastUserMessage,
   getEventBufferSince,
   getSessionInfo,
+  getSessionTerminalState,
   killAll,
   configureTransport,
   type ChatSessionInfo,
@@ -211,7 +214,7 @@ function writeChatMode(db: Database, taskId: string, mode: string, chatMode: Cha
  * its terminal_mode entry — preserving current default behavior
  * (`--allow-dangerously-skip-permissions`) for pre-upgrade tasks. New tasks
  * created after this migration runs get `auto-accept` by default via
- * `buildCreateOpts`.
+ * `buildHydrateOpts`.
  *
  * Two categories of pre-existing tasks are covered:
  *   1. Existing provider_config entry but no `chatMode` field — patched.
@@ -315,7 +318,8 @@ export function inspectPermissionFlags(flags: string[]): {
 }
 
 /**
- * Shared opts builder for `chat:create` + `chat:reset` + `chat:setMode`.
+ * Shared opts builder for `chat:hydrate` + `chat:reset` + `chat:start` + control
+ * fast-paths.
  *
  * `fresh: true` forces a new session id (skips --resume) — used by reset to
  * guarantee a clean thread regardless of whatever was previously stored. PATH
@@ -325,13 +329,13 @@ export function inspectPermissionFlags(flags: string[]): {
  * `chatModeOverride` short-circuits the DB lookup of provider_config.chatMode —
  * used by `chat:setMode` so the spawn flags reflect the user's intent before
  * the DB cache is updated. Lets us run the DB write *after* spawn succeeds
- * (transactional) without a race where buildCreateOpts re-reads stale DB.
+ * (transactional) without a race where the builder re-reads stale DB.
  */
-async function buildCreateOpts(
+async function buildHydrateOpts(
   db: Database,
   opts: ChatCreateOpts,
   { fresh, chatModeOverride, chatModelOverride, chatEffortOverride }: { fresh: boolean; chatModeOverride?: ChatMode; chatModelOverride?: ChatModel; chatEffortOverride?: ChatEffort | null }
-): Promise<Parameters<typeof createChat>[0]> {
+): Promise<Parameters<typeof hydrateSession>[0]> {
   const providerCfg = readProviderConfig(db, opts.taskId, opts.mode)
   // Flag-resolution priority for chat:
   //   1. per-call override (`providerFlagsOverride`)
@@ -408,7 +412,15 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
   // Wire SQLite persistence into the transport. Default deps had a no-op
   // persistEvent; configureTransport keeps spawn/whichBinary/broadcast* untouched.
   configureTransport({
-    onStateChange: notifyGlobalStateListeners,
+    onStateChange: (sessionId, newState, oldState) => {
+      // ChatTerminalState includes `not-spawned` which doesn't exist in the
+      // shared `TerminalState` union (PTY domain). transitionState skips into
+      // `not-spawned` (it's only set at hydrate time), so by the time
+      // onStateChange fires both endpoints are real terminal states — cast
+      // narrows them down for the global listener.
+      if (newState === 'not-spawned' || oldState === 'not-spawned') return
+      notifyGlobalStateListeners(sessionId, newState, oldState)
+    },
     persistEvent: (tabId, seq, event) => {
       try {
         persistChatEvent(db, tabId, seq, event)
@@ -445,11 +457,37 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
 
   ipcMain.handle('chat:supports', (_, mode: string): boolean => supportsChatMode(mode))
 
-  ipcMain.handle('chat:create', async (_, opts: ChatCreateOpts): Promise<ChatSessionInfo> => {
-    return createChat(await buildCreateOpts(db, opts, { fresh: false }))
+  /**
+   * Lazy hydrate: load persisted buffer + chat metadata into an in-memory
+   * skeleton session WITHOUT spawning a subprocess. The actual OS process is
+   * started lazily on the first `chat:send` (or queue drain). Idempotent —
+   * reattaches to an existing live session for the same tab.
+   */
+  ipcMain.handle('chat:hydrate', async (_, opts: ChatCreateOpts): Promise<ChatSessionInfo> => {
+    return hydrateSession(await buildHydrateOpts(db, opts, { fresh: false }))
   })
 
-  ipcMain.handle('chat:send', (_, tabId: string, text: string): boolean => {
+  /**
+   * Eager spawn entrypoint. Used by the renderer's "Restart" button after a
+   * session ended — user wants a live subprocess immediately, not on the next
+   * keystroke. Hydrates if needed, then `ensureSpawned`. Idempotent for live
+   * sessions.
+   */
+  ipcMain.handle('chat:start', async (_, opts: ChatCreateOpts): Promise<ChatSessionInfo> => {
+    hydrateSession(await buildHydrateOpts(db, opts, { fresh: false }))
+    return ensureSpawned(opts.tabId)
+  })
+
+  ipcMain.handle('chat:send', async (_, tabId: string, text: string): Promise<boolean> => {
+    // Lazy trigger: a `chat:send` is the canonical "spawn this subprocess now"
+    // signal. ensureSpawned is idempotent + dedupes concurrent callers, so
+    // simultaneous send + queue drain on the same tab share one spawn.
+    try {
+      await ensureSpawned(tabId)
+    } catch (err) {
+      console.error('[chat-handlers] ensureSpawned failed during chat:send:', err)
+      return false
+    }
     return sendUserMessage(tabId, text)
   })
 
@@ -495,12 +533,15 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
   // ended". Mirrors `chat:setMode`.
   ipcMain.handle('chat:interrupt', async (_, opts: ChatCreateOpts): Promise<ChatSessionInfo> => {
     // Persist interrupted marker FIRST so replay sees the turn boundary
-    // regardless of which path resolves.
+    // regardless of which path resolves. recordInterrupted no-ops for
+    // pre-spawn skeletons (nothing to interrupt).
     recordInterrupted(opts.tabId)
 
-    // Fast path: control_request `interrupt` over stdin.
+    // Fast path: control_request `interrupt` over stdin. Only applies to live
+    // (spawned, not-ended) sessions; pre-spawn skeletons have no turn in flight.
+    const liveState = getSessionTerminalState(opts.tabId)
     const liveInfo = getSessionInfo(opts.tabId)
-    if (liveInfo && !liveInfo.ended) {
+    if (liveState && liveState !== 'not-spawned' && liveInfo && !liveInfo.ended) {
       try {
         await sendControlRequest(opts.tabId, { subtype: 'interrupt' })
         const refreshed = getSessionInfo(opts.tabId)
@@ -511,9 +552,13 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
       }
     }
 
-    // Fallback: kill + respawn.
+    // Fallback: kill + respawn. Eager-spawn here mirrors the warm-subprocess
+    // semantics of the control_request fast path — after interrupt the user
+    // typically continues the turn immediately, so a ready process avoids the
+    // double-latency of "interrupt → next send waits on spawn".
     removeSession(opts.tabId)
-    return createChat(await buildCreateOpts(db, opts, { fresh: false }))
+    hydrateSession(await buildHydrateOpts(db, opts, { fresh: false }))
+    return ensureSpawned(opts.tabId)
   })
 
   // Stop-button / Esc path. Same kill+respawn as `chat:interrupt`, but if no
@@ -535,7 +580,12 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
       console.error('[chat-handlers] clearChatQueue failed:', err)
     }
     removeSession(opts.tabId)
-    await createChat(await buildCreateOpts(db, opts, { fresh: false }))
+    // Eager respawn after Stop matches Claude CLI parity — user just hit the
+    // big red button on a turn, the implicit expectation is "ready to keep
+    // chatting"; making them wait for spawn on next send is worse UX than the
+    // lazy mode the rest of the app uses for first-ever messages.
+    hydrateSession(await buildHydrateOpts(db, opts, { fresh: false }))
+    await ensureSpawned(opts.tabId)
     return { popped: result.popped, text: result.text }
   })
 
@@ -567,6 +617,13 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
   // window: SIGTERM is sent + the session is removed from the map sync'ly, so any
   // exit event the OS later delivers is swallowed by the identity guard in
   // chat-transport-manager's child.on('exit') handler.
+  /**
+   * Atomic reset: kills the current session, wipes persisted history + queue +
+   * stored conversation id, and re-hydrates a fresh skeleton in one IPC. The
+   * fresh skeleton is `not-spawned` — no subprocess until the user's next
+   * `chat:send`. Matches the lazy-spawn end-to-end semantics: nothing runs
+   * until the user actually engages.
+   */
   ipcMain.handle('chat:reset', async (_, opts: ChatCreateOpts): Promise<ChatSessionInfo> => {
     removeSession(opts.tabId)
     try {
@@ -584,7 +641,7 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
     } catch (err) {
       console.error('[chat-handlers] clearChatConversationId failed:', err)
     }
-    return createChat(await buildCreateOpts(db, opts, { fresh: true }))
+    return hydrateSession(await buildHydrateOpts(db, opts, { fresh: true }))
   })
 
   ipcMain.handle('chat:getBufferSince', (_, tabId: string, afterSeq: number) => {
@@ -628,13 +685,25 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
       // shouldn't be able to persist a forbidden mode.
       const safe = await resolveSafeChatMode(opts.chatMode)
 
+      // Pre-spawn fast path: skeleton session, no live subprocess to inform.
+      // Just persist to DB + update the in-memory skeleton so the next spawn
+      // picks it up via buildSpawnArgs. No control_request, no respawn.
+      const liveState = getSessionTerminalState(opts.tabId)
+      if (liveState === 'not-spawned') {
+        writeChatMode(db, opts.taskId, opts.mode, safe)
+        updateSessionChatMode(opts.tabId, safe)
+        const refreshed = getSessionInfo(opts.tabId)
+        if (refreshed) return refreshed
+        // Skeleton vanished between checks — fall through to re-hydrate path below.
+      }
+
       // Fast path: live `set_permission_mode` control_request. Preserves the
       // warm subprocess + conversation state. Only available when the live
       // session has a control channel AND the target maps to a CLI
       // permission_mode value (bypass uses a separate flag → null → fallback).
       const cliMode = chatModeToCliPermissionMode(safe)
       const liveInfo = getSessionInfo(opts.tabId)
-      if (cliMode && liveInfo && !liveInfo.ended) {
+      if (cliMode && liveState && liveState !== 'not-spawned' && liveInfo && !liveInfo.ended) {
         try {
           await sendControlRequest(opts.tabId, {
             subtype: 'set_permission_mode',
@@ -656,14 +725,12 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
       // Fallback: kill + respawn with new flags. Required for `bypass` (uses
       // --allow-dangerously-skip-permissions, no live equivalent) and as a
       // safety net when the control channel rejects/times out. Transactional:
-      // spawn first, persist DB after spawn succeeds. If createChat throws, DB
-      // stays at previous mode. chatModeOverride bypasses DB read so the new
-      // child uses `safe` flags even though provider_config still has the old
-      // value.
+      // spawn first, persist DB after spawn succeeds. chatModeOverride bypasses
+      // DB read so the new child uses `safe` flags even though provider_config
+      // still has the old value.
       removeSession(opts.tabId)
-      const created = await createChat(
-        await buildCreateOpts(db, opts, { fresh: false, chatModeOverride: safe })
-      )
+      hydrateSession(await buildHydrateOpts(db, opts, { fresh: false, chatModeOverride: safe }))
+      const created = await ensureSpawned(opts.tabId)
       writeChatMode(db, opts.taskId, opts.mode, safe)
       // Returned ChatSessionInfo carries `chatMode: safe` via Session.chatMode,
       // so renderer trusts the server's resolved value (e.g. auto → auto-accept
@@ -692,12 +759,21 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
         throw new Error(`Invalid chat model: ${String(opts.chatModel)}`)
       }
 
+      // Pre-spawn fast path: DB write + skeleton mutation only.
+      const liveState = getSessionTerminalState(opts.tabId)
+      if (liveState === 'not-spawned') {
+        writeChatModel(db, opts.taskId, opts.mode, opts.chatModel)
+        updateSessionChatModel(opts.tabId, opts.chatModel)
+        const refreshed = getSessionInfo(opts.tabId)
+        if (refreshed) return refreshed
+      }
+
       // Fast path: `set_model` control_request — preserves warm subprocess +
       // conversation state. Same shape as `chat:setMode` (subtype
       // set_permission_mode). The CLI accepts the chat model alias directly
       // (`opus`/`sonnet`/`haiku`) on `--model`; protocol mirrors that.
       const liveInfo = getSessionInfo(opts.tabId)
-      if (liveInfo && !liveInfo.ended) {
+      if (liveState && liveState !== 'not-spawned' && liveInfo && !liveInfo.ended) {
         try {
           await sendControlRequest(opts.tabId, {
             subtype: 'set_model',
@@ -716,9 +792,8 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
       // Fallback: kill + respawn. chatModelOverride bypasses DB so the new
       // child uses the requested model before we persist.
       removeSession(opts.tabId)
-      const created = await createChat(
-        await buildCreateOpts(db, opts, { fresh: false, chatModelOverride: opts.chatModel })
-      )
+      hydrateSession(await buildHydrateOpts(db, opts, { fresh: false, chatModelOverride: opts.chatModel }))
+      const created = await ensureSpawned(opts.tabId)
       writeChatModel(db, opts.taskId, opts.mode, opts.chatModel)
       return created
     }
@@ -739,13 +814,21 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
       if (!isChatEffort(opts.chatEffort)) {
         throw new Error(`Invalid chat effort: ${String(opts.chatEffort)}`)
       }
+      // Pre-spawn: DB write + skeleton mutation. Effort flag takes effect on
+      // first spawn via buildSpawnArgs reading the (now-updated) skeleton.
+      const liveState = getSessionTerminalState(opts.tabId)
+      if (liveState === 'not-spawned') {
+        writeChatEffort(db, opts.taskId, opts.mode, opts.chatEffort)
+        updateSessionChatEffort(opts.tabId, opts.chatEffort)
+        const refreshed = getSessionInfo(opts.tabId)
+        if (refreshed) return refreshed
+      }
       // Same kill+respawn pattern as chat:setMode/setModel — effort flag only
       // takes effect on a fresh process. chatEffortOverride bypasses DB so the
       // new child uses the requested level before we persist.
       removeSession(opts.tabId)
-      const created = await createChat(
-        await buildCreateOpts(db, opts, { fresh: false, chatEffortOverride: opts.chatEffort })
-      )
+      hydrateSession(await buildHydrateOpts(db, opts, { fresh: false, chatEffortOverride: opts.chatEffort }))
+      const created = await ensureSpawned(opts.tabId)
       writeChatEffort(db, opts.taskId, opts.mode, opts.chatEffort)
       return created
     }

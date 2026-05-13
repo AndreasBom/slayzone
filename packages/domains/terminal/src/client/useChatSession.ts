@@ -11,7 +11,14 @@ import {
 // We don't import ElectronAPI types here to avoid a cycle. The `chat` namespace shape
 // is duplicated as a minimal interface; the real type lives in @slayzone/types/api.ts.
 interface ChatApi {
-  create: (opts: {
+  hydrate: (opts: {
+    tabId: string
+    taskId: string
+    mode: string
+    cwd: string
+    providerFlagsOverride?: string | null
+  }) => Promise<unknown>
+  start: (opts: {
     tabId: string
     taskId: string
     mode: string
@@ -148,10 +155,14 @@ export interface UseChatSessionOpts {
  * React hook that spawns and subscribes to a chat session for one tab.
  *
  * Lifecycle:
- * 1. On mount: call chat:create (main process spawns or returns existing session).
+ * 1. On mount: call chat:hydrate (main process loads persisted buffer into an
+ *    in-memory skeleton; does NOT spawn a subprocess). Reattaches to a live
+ *    session if one exists for the tab.
  * 2. Subscribe to chat:event and chat:exit, filter by tabId, feed into reducer.
  * 3. Replay buffered events via getBufferSince(tabId, -1) so tab re-open sees prior state.
- * 4. On unmount: unsubscribe only. Session persists (main keeps buffer). Tab close triggers chat:remove via useTaskTerminals.
+ * 4. Subprocess starts lazily on the first chat:send (or queue drain). The
+ *    explicit "Restart" button in ChatPanel calls chat.start (eager spawn).
+ * 5. On unmount: unsubscribe only. Session persists (main keeps buffer). Tab close triggers chat:remove via useTaskTerminals.
  */
 export function useChatSession(opts: UseChatSessionOpts): UseChatSessionResult {
   const [state, dispatch] = useReducer(reducer, undefined, initialState)
@@ -218,13 +229,13 @@ export function useChatSession(opts: UseChatSessionOpts): UseChatSessionResult {
       dispatch({ type: 'process-exit', sessionId, code, signal })
     })
 
-    // Serialize: AWAIT create, THEN replay. The create handler awaits
-    // whichBinary() before populating the in-memory session map, so a
-    // parallel getBufferSince would race and return [] for cold reattach.
-    // Awaiting guarantees session.buffer is seeded with persisted history.
+    // Serialize: AWAIT hydrate, THEN replay. Hydrate inserts the session
+    // skeleton into the main-side sessions map (seeded with persisted history)
+    // synchronously enough for getBufferSince to return real data. Awaiting
+    // guarantees session.buffer is seeded with persisted history.
     void (async () => {
       try {
-        await chat.create({
+        await chat.hydrate({
           tabId: opts.tabId,
           taskId: opts.taskId,
           mode: opts.mode,
@@ -232,8 +243,8 @@ export function useChatSession(opts: UseChatSessionOpts): UseChatSessionResult {
           providerFlagsOverride: opts.providerFlagsOverride ?? null,
         })
       } catch (e) {
-        // Surface create failure but still attempt replay (e.g. session may
-        // exist from a previous reattach despite this create rejecting).
+        // Surface hydrate failure but still attempt replay (e.g. session may
+        // exist from a previous reattach despite this hydrate rejecting).
         dispatch({
           type: 'event',
           event: { kind: 'error', message: (e as Error).message ?? String(e) },

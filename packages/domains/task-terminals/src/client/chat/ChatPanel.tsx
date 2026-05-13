@@ -175,7 +175,14 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
             cwd: string
             providerFlagsOverride?: string | null
           }) => Promise<unknown>
-          create: (opts: {
+          hydrate: (opts: {
+            tabId: string
+            taskId: string
+            mode: string
+            cwd: string
+            providerFlagsOverride?: string | null
+          }) => Promise<unknown>
+          start: (opts: {
             tabId: string
             taskId: string
             mode: string
@@ -198,7 +205,8 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
       kill: (id) => chat?.kill(id) ?? Promise.resolve(),
       remove: (id) => chat?.remove(id) ?? Promise.resolve(),
       reset: (opts) => chat?.reset(opts) ?? Promise.resolve(null),
-      create: (opts) => chat?.create(opts) ?? Promise.resolve(null),
+      hydrate: (opts) => chat?.hydrate(opts) ?? Promise.resolve(null),
+      start: (opts) => chat?.start(opts) ?? Promise.resolve(null),
       send: (id, text) => chat?.send(id, text) ?? Promise.resolve(false),
       interrupt: (o) => chat?.interrupt(o) ?? Promise.resolve(null),
     }
@@ -661,13 +669,18 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
   const [restarting, setRestarting] = useState(false)
   const [pendingChatDisable, setPendingChatDisable] = useState(false)
   // Suppress "Session ended" UI during a reset/restart — process-exit fires between kill and
-  // the new session's turn-init, creating a brief flash of the ended state.
-  const displaySessionEnded = state.sessionEnded && !resetting && !restarting
+  // the new session's turn-init, creating a brief flash of the ended state. Also suppress
+  // on `notStarted` (lazy-mount with no spawn yet) — there's nothing to restart, and the
+  // user can just type to trigger the first spawn.
+  const displaySessionEnded = state.sessionEnded && !state.notStarted && !resetting && !restarting
   const handleRestart = useCallback(async () => {
     if (restarting) return
     setRestarting(true)
     try {
-      await chatApi.create({
+      // Explicit eager spawn — user clicked "Restart", they want a live
+      // subprocess immediately. chat.start hydrates if needed then
+      // ensureSpawned. chat.hydrate alone would leave the session lazy.
+      await chatApi.start({
         tabId,
         taskId,
         mode,

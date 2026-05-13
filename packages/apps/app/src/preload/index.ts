@@ -522,8 +522,10 @@ const api: ElectronAPI = {
   },
   chat: {
     supports: (mode: string) => ipcRenderer.invoke('chat:supports', mode),
-    create: (opts: { tabId: string; taskId: string; mode: string; cwd: string; providerFlagsOverride?: string | null }) =>
-      ipcRenderer.invoke('chat:create', opts),
+    hydrate: (opts: { tabId: string; taskId: string; mode: string; cwd: string; providerFlagsOverride?: string | null }) =>
+      ipcRenderer.invoke('chat:hydrate', opts),
+    start: (opts: { tabId: string; taskId: string; mode: string; cwd: string; providerFlagsOverride?: string | null }) =>
+      ipcRenderer.invoke('chat:start', opts),
     send: (tabId: string, text: string) => ipcRenderer.invoke('chat:send', tabId, text),
     sendToolResult: (
       tabId: string,

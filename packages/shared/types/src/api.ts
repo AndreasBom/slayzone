@@ -2,6 +2,7 @@ import type { Project, CreateProjectInput, UpdateProjectInput, ExecutionContext 
 import type { Task, CreateTaskInput, UpdateTaskInput, DesktopHandoffPolicy, TaskTemplate, CreateTaskTemplateInput, UpdateTaskTemplateInput, TaskArtifact, CreateArtifactInput, UpdateArtifactInput, ArtifactFolder, CreateArtifactFolderInput, UpdateArtifactFolderInput } from '@slayzone/task/shared'
 import type { ArtifactVersion, VersionRef, DiffResult, PruneReport } from '@slayzone/task-artifacts/shared'
 import type { Tag, CreateTagInput, UpdateTagInput } from '@slayzone/tags/shared'
+import type { FeedbackThread, FeedbackMessage, CreateFeedbackThreadInput, AddFeedbackMessageInput } from '@slayzone/feedback/shared'
 import type { AgentTurnRange } from '@slayzone/agent-turns/shared'
 import type {
   TerminalMode,
@@ -373,10 +374,10 @@ export interface ElectronAPI {
     getAutomationActionRuns: (runId: string) => Promise<AutomationActionRun[]>
   }
   feedback: {
-    listThreads: () => Promise<Array<{ id: string; title: string; discord_thread_id: string | null; created_at: string }>>
-    createThread: (input: { id: string; title: string; discord_thread_id: string | null }) => Promise<void>
-    getMessages: (threadId: string) => Promise<Array<{ id: string; thread_id: string; content: string; created_at: string }>>
-    addMessage: (input: { id: string; thread_id: string; content: string }) => Promise<void>
+    listThreads: () => Promise<FeedbackThread[]>
+    createThread: (input: CreateFeedbackThreadInput) => Promise<void>
+    getMessages: (threadId: string) => Promise<FeedbackMessage[]>
+    addMessage: (input: AddFeedbackMessageInput) => Promise<void>
     updateThreadDiscordId: (threadId: string, discordThreadId: string) => Promise<void>
     deleteThread: (threadId: string) => Promise<void>
   }
@@ -562,7 +563,26 @@ export interface ElectronAPI {
   }
   chat: {
     supports: (mode: string) => Promise<boolean>
-    create: (opts: {
+    /**
+     * Lazy hydrate: load persisted buffer + chat metadata into an in-memory
+     * skeleton WITHOUT spawning a subprocess. The OS process starts on the
+     * first `chat:send` (or queue drain). Idempotent — reattaches to a live
+     * session for the same tab.
+     */
+    hydrate: (opts: {
+      tabId: string
+      taskId: string
+      mode: string
+      cwd: string
+      providerFlagsOverride?: string | null
+    }) => Promise<ChatSessionInfo>
+    /**
+     * Eager spawn. Used by the renderer's "Restart" button after a session
+     * ended — user wants a live subprocess immediately, not on the next
+     * keystroke. Hydrates if needed, then ensures the OS subprocess is
+     * running. Idempotent for live sessions.
+     */
+    start: (opts: {
       tabId: string
       taskId: string
       mode: string

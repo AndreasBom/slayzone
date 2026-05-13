@@ -15,7 +15,14 @@ import { markSessionUserInput, clearSessionUserInputMark } from './user-input-tr
 export { markSessionUserInput }
 export type { BufferedEvent } from './chat-events-store'
 
-export type ChatTerminalState = 'starting' | 'running' | 'idle' | 'error' | 'dead'
+/**
+ * `not-spawned` — session hydrated from persisted history but the OS subprocess
+ * has not been spawned yet. Tab-open hydrates into this state; the first
+ * `chat:send` (or queue drain) transitions through `starting → idle`. Skeleton
+ * sessions in `not-spawned` are excluded from `listChatSessions` so the registry
+ * never advertises them as live.
+ */
+export type ChatTerminalState = 'not-spawned' | 'starting' | 'running' | 'idle' | 'error' | 'dead'
 
 /** Dependency-injection seam for tests AND for production wiring (event persistence). */
 export interface TransportDeps {
@@ -144,7 +151,12 @@ interface Session {
   mode: string
   cwd: string
   adapter: AgentAdapter
-  child: ChildProcess
+  /**
+   * The OS subprocess. Null when the session is hydrated-only (`not-spawned`
+   * state) — buffer + metadata exist, but no child has been started. Set by
+   * `ensureSpawned`; cleared by `respawnFresh` between kill and spawn.
+   */
+  child: ChildProcess | null
   buffer: BufferedEvent[]
   nextSeq: number
   ended: boolean
@@ -386,11 +398,12 @@ function handleEvent(session: Session, event: AgentEvent): void {
 async function respawnFresh(session: Session): Promise<void> {
   // Kill current (if not already gone) and wait for exit, then spawn fresh.
   try {
-    if (!session.ended) {
-      session.child.kill('SIGTERM')
+    if (!session.ended && session.child) {
+      const child = session.child
+      child.kill('SIGTERM')
       await new Promise<void>((resolve) => {
         const t = setTimeout(resolve, 2000)
-        session.child.once('exit', () => {
+        child.once('exit', () => {
           clearTimeout(t)
           resolve()
         })
@@ -405,7 +418,7 @@ async function respawnFresh(session: Session): Promise<void> {
   // events keep collision-free PRIMARY KEY (tab_id, seq) in chat_events.
   const carriedBuffer = [...session.buffer]
   const carriedNextSeq = session.nextSeq
-  // Remove before recreate so createChat treats tabId as fresh.
+  // Remove before re-hydrate so hydrateSession treats tabId as fresh.
   sessions.delete(session.tabId)
   const nextOpts: CreateChatOpts = {
     ...session.respawnOpts,
@@ -416,7 +429,8 @@ async function respawnFresh(session: Session): Promise<void> {
     initialNextSeq: carriedNextSeq,
   }
   try {
-    await createChat(nextOpts)
+    hydrateSession(nextOpts)
+    await ensureSpawned(nextOpts.tabId)
   } catch (e) {
     console.error('[chat-transport] auto-retry after invalid resume failed:', e)
   }
@@ -479,15 +493,25 @@ export interface CreateChatOpts {
   chatEffort?: ChatEffort | null
 }
 
-export async function createChat(opts: CreateChatOpts): Promise<ChatSessionInfo> {
+/**
+ * Hydrate a chat session WITHOUT spawning a subprocess. Loads persisted buffer
+ * into memory, populates resolved chatMode/Model/Effort, and inserts a
+ * `not-spawned` skeleton into the sessions map. The actual OS subprocess is
+ * started lazily by `ensureSpawned` on the first `chat:send` (or queue drain).
+ *
+ * Idempotent: if a live session (or any prior skeleton) already exists for the
+ * tab, returns its info. Zombie sessions (identity mismatch on tabId) are torn
+ * down and replaced.
+ */
+export function hydrateSession(opts: CreateChatOpts): ChatSessionInfo {
   // Refuse duplicate sessions for one tab.
   const existing = sessions.get(opts.tabId)
-  if (existing && !existing.ended) {
+  if (existing) {
     // Invariant: a tabId must only ever back ONE (taskId, cwd, mode) tuple. If the
-    // caller asks to create a chat with the same tabId but a different identity, the
-    // prior session is a zombie (e.g. tab was closed without chat:remove). Returning
+    // caller asks to hydrate the same tabId but a different identity, the prior
+    // session is a zombie (e.g. tab was closed without chat:remove). Returning
     // it would stream another task's events into the new panel — exactly the symptom
-    // of the cross-task chat leak. Tear it down and spawn fresh.
+    // of the cross-task chat leak. Tear it down and re-hydrate.
     if (
       existing.taskId !== opts.taskId ||
       existing.cwd !== opts.cwd ||
@@ -499,13 +523,15 @@ export async function createChat(opts: CreateChatOpts): Promise<ChatSessionInfo>
           `replacing with (taskId=${opts.taskId}, cwd=${opts.cwd}, mode=${opts.mode})`
       )
       try {
-        existing.child.kill('SIGTERM')
+        existing.child?.kill('SIGTERM')
       } catch {
-        /* already dead */
+        /* already dead or never spawned */
       }
       sessions.delete(opts.tabId)
-      // Fall through to fresh spawn below.
+      // Fall through to fresh hydrate below.
     } else {
+      // Reattach: live session or pre-spawn skeleton — both already carry
+      // buffer + resolved chat state, just return current info.
       return toInfo(existing)
     }
   }
@@ -514,28 +540,6 @@ export async function createChat(opts: CreateChatOpts): Promise<ChatSessionInfo>
   if (!adapter) {
     throw new ChatTransportError(`No agent adapter registered for mode "${opts.mode}"`)
   }
-
-  const binary = await deps.whichBinary(adapter.binaryName)
-  if (!binary) {
-    throw new ChatTransportError(
-      `Binary "${adapter.binaryName}" not found on PATH. Install it or fix your shell's PATH.`
-    )
-  }
-
-  const sessionId = opts.conversationId || randomUUID()
-  const { args } = adapter.buildSpawnArgs({
-    sessionId,
-    resume: Boolean(opts.conversationId),
-    cwd: opts.cwd,
-    providerFlags: opts.providerFlags,
-  })
-
-  const child = deps.spawn(binary, args, {
-    cwd: opts.cwd,
-    env: { ...process.env, ...opts.env },
-    stdio: ['pipe', 'pipe', 'pipe'],
-    shell: false,
-  })
 
   // Seed buffer/seq from persisted history when chat-handlers passed it in.
   // Cap seeded buffer at MAX_BUFFER_EVENTS to mirror the in-memory invariant.
@@ -546,6 +550,12 @@ export async function createChat(opts: CreateChatOpts): Promise<ChatSessionInfo>
     opts.initialNextSeq ??
     (seededBuffer.length > 0 ? seededBuffer[seededBuffer.length - 1].seq + 1 : 0)
 
+  // Skeleton sessionId placeholder. When the resume id is set in providerCfg we
+  // honor it (so `--resume <id>` fires on first spawn); otherwise leave as-is —
+  // ensureSpawned generates a fresh UUID at spawn time. Storing it now would
+  // burn a Claude SDK conversation id even if the user never sends.
+  const sessionId = opts.conversationId || randomUUID()
+
   const session: Session = {
     sessionId,
     spawnId: randomUUID(),
@@ -554,13 +564,13 @@ export async function createChat(opts: CreateChatOpts): Promise<ChatSessionInfo>
     mode: opts.mode,
     cwd: opts.cwd,
     adapter,
-    child,
+    child: null,
     buffer: seededBuffer,
     nextSeq: seededNextSeq,
     ended: false,
     startedAt: new Date().toISOString(),
     lastOutputTime: Date.now(),
-    terminalState: 'starting',
+    terminalState: 'not-spawned',
     usedResume: Boolean(opts.conversationId),
     sawHealthyTurn: false,
     retryScheduled: false,
@@ -580,18 +590,111 @@ export async function createChat(opts: CreateChatOpts): Promise<ChatSessionInfo>
 
   // Restored history with an unfinished turn → emit synthetic `interrupted` so
   // the renderer reducer rebalances userMessagesSent/resultCount. Otherwise the
-  // tab badge (idle, freshly spawned) and the chat panel's inFlight (true,
-  // counting stale persisted user-messages without matching results) drift
-  // apart. `interrupted` is not a state-transition trigger in handleEvent, so
-  // emitting it here keeps `terminalState='starting'` until the spawn handler
-  // moves it to idle.
+  // tab badge and the chat panel's inFlight (true, counting stale persisted
+  // user-messages without matching results) drift apart. Emitted at HYDRATE
+  // time (was: at spawn time) so the marker shows even before the user
+  // triggers a spawn — critical for lazy mode where a buffer with an
+  // unfinished turn may sit unspawned indefinitely.
   if (tailIsUnfinishedTurn(seededBuffer)) {
     // Synthetic restore-time signal — describes the SEEDED buffer, not the
-    // current spawn. Commit directly so it's broadcast immediately even when
-    // the spawn used --resume (and would otherwise stage in the tentative
-    // window). Renderer reducer relies on this to balance counters.
+    // current spawn. Commit directly so it's broadcast immediately. Renderer
+    // reducer relies on this to balance counters.
     commitEvent(session, { kind: 'interrupted' })
   }
+
+  return toInfo(session)
+}
+
+/**
+ * Dedupe map for concurrent `ensureSpawned` callers (e.g. simultaneous
+ * `chat:send` + queue drainer racing on the same tab). Keyed by tabId; the
+ * stored promise resolves when the spawn finishes (or rejects on error). All
+ * concurrent callers await the same promise, preventing double-spawn.
+ */
+const inFlightSpawns = new Map<string, Promise<ChatSessionInfo>>()
+
+/**
+ * Idempotent spawn primitive. If the session already has a live child, returns
+ * its info unchanged. Otherwise starts the OS subprocess, wires stdio/exit
+ * handlers, and transitions `not-spawned → starting → idle` on the kernel's
+ * `'spawn'` event.
+ *
+ * Throws if the tab has no hydrated session (caller must hydrate first), or if
+ * adapter / binary resolution fails.
+ *
+ * Concurrent calls for the same tab dedupe via `inFlightSpawns` — first call
+ * does the work, others await its promise.
+ */
+export async function ensureSpawned(tabId: string): Promise<ChatSessionInfo> {
+  const session = sessions.get(tabId)
+  if (!session) {
+    throw new ChatTransportError(
+      `ensureSpawned: no hydrated session for tabId=${tabId} — call hydrateSession first`
+    )
+  }
+  // Already live — fast path.
+  if (session.child && !session.ended) return toInfo(session)
+  // Concurrent caller still in flight — share its promise.
+  const pending = inFlightSpawns.get(tabId)
+  if (pending) return pending
+
+  const promise = (async (): Promise<ChatSessionInfo> => {
+    try {
+      await spawnSubprocess(session)
+      return toInfo(session)
+    } finally {
+      inFlightSpawns.delete(tabId)
+    }
+  })()
+  inFlightSpawns.set(tabId, promise)
+  return promise
+}
+
+/**
+ * Internal: spawn the OS subprocess for an existing Session and wire up
+ * stdout/stderr/exit/error handlers. Called by `ensureSpawned` on first
+ * activation and by `respawnFresh` after the tentative-resume retry.
+ *
+ * Assumes the Session is already in the `sessions` map. Mutates `session.child`,
+ * `session.sessionId` (when not using --resume), `session.spawnId`, and
+ * transitions `terminalState`.
+ */
+async function spawnSubprocess(session: Session): Promise<void> {
+  const opts = session.respawnOpts
+  const adapter = session.adapter
+
+  const binary = await deps.whichBinary(adapter.binaryName)
+  if (!binary) {
+    throw new ChatTransportError(
+      `Binary "${adapter.binaryName}" not found on PATH. Install it or fix your shell's PATH.`
+    )
+  }
+
+  // sessionId carried from hydrate (preserves resume id when set). Fresh
+  // spawn-id per OS process so the renderer can scope bg shells to this run.
+  const sessionId = session.sessionId
+  session.spawnId = randomUUID()
+  const { args } = adapter.buildSpawnArgs({
+    sessionId,
+    resume: Boolean(opts.conversationId),
+    cwd: opts.cwd,
+    providerFlags: opts.providerFlags,
+  })
+
+  const child = deps.spawn(binary, args, {
+    cwd: opts.cwd,
+    env: { ...process.env, ...opts.env },
+    stdio: ['pipe', 'pipe', 'pipe'],
+    shell: false,
+  })
+
+  session.child = child
+  session.ended = false
+  session.usedResume = Boolean(opts.conversationId)
+  session.sawHealthyTurn = false
+  // Move out of the lazy `not-spawned` state. `child.on('spawn')` below
+  // promotes to `idle` once the kernel reports the pid.
+  transitionState(session, 'starting')
 
   // --- spawn: subprocess confirmed alive ---
   // Tie state machine to actual OS process lifecycle. `'spawn'` fires after the
@@ -649,7 +752,7 @@ export async function createChat(opts: CreateChatOpts): Promise<ChatSessionInfo>
       })
       if (line != null) {
         try {
-          session.child.stdin?.write(line + '\n')
+          session.child?.stdin?.write(line + '\n')
         } catch {
           /* best-effort; SDK timeout will surface via process exit */
         }
@@ -712,13 +815,11 @@ export async function createChat(opts: CreateChatOpts): Promise<ChatSessionInfo>
       detail: { name: err.name },
     })
   })
-
-  return toInfo(session)
 }
 
 export function sendUserMessage(tabId: string, text: string): boolean {
   const session = sessions.get(tabId)
-  if (!session || session.ended) return false
+  if (!session || session.ended || !session.child) return false
   const line = session.adapter.serializeUserMessage(text, session.sessionId)
   session.child.stdin?.write(line + '\n')
   // Record into the session buffer so tab reloads / replay reconstruct user messages.
@@ -740,7 +841,7 @@ export function sendToolResult(
   args: { toolUseId: string; content: string; isError?: boolean }
 ): boolean {
   const session = sessions.get(tabId)
-  if (!session || session.ended) return false
+  if (!session || session.ended || !session.child) return false
   if (!session.adapter.serializeToolResult) return false
   const line = session.adapter.serializeToolResult({
     toolUseId: args.toolUseId,
@@ -766,7 +867,7 @@ export function sendControlRequest(
   timeoutMs = 30_000
 ): Promise<unknown> {
   const session = sessions.get(tabId)
-  if (!session || session.ended) {
+  if (!session || session.ended || !session.child) {
     return Promise.reject(new Error('no live session'))
   }
   if (!session.adapter.serializeControlRequest) {
@@ -778,6 +879,7 @@ export function sendControlRequest(
   if (line == null) {
     return Promise.reject(new Error('adapter refused to serialize control_request'))
   }
+  const child = session.child
   return new Promise<unknown>((resolve, reject) => {
     const timer = setTimeout(() => {
       session.pendingControl.delete(requestId)
@@ -785,7 +887,7 @@ export function sendControlRequest(
     }, timeoutMs)
     session.pendingControl.set(requestId, { resolve, reject, timer })
     try {
-      session.child.stdin?.write(line + '\n')
+      child.stdin?.write(line + '\n')
     } catch (err) {
       clearTimeout(timer)
       session.pendingControl.delete(requestId)
@@ -817,6 +919,17 @@ export function updateSessionChatModel(tabId: string, model: ChatModel | null): 
 }
 
 /**
+ * Mutate the in-memory `Session.chatEffort`. Used by the pre-spawn fast path of
+ * `chat:setEffort` so a skeleton session reflects the new value before the
+ * next spawn picks it up via buildSpawnArgs.
+ */
+export function updateSessionChatEffort(tabId: string, effort: ChatEffort | null): void {
+  const session = sessions.get(tabId)
+  if (!session) return
+  session.chatEffort = effort
+}
+
+/**
  * Reply to an inbound `control_request` (e.g. `subtype:'can_use_tool'` from
  * `--permission-prompt-tool stdio`). The renderer has surfaced the prompt
  * to the user and gathered their decision; this writes the success/error
@@ -833,7 +946,7 @@ export function respondToPermissionRequest(
   }
 ): boolean {
   const session = sessions.get(tabId)
-  if (!session || session.ended) return false
+  if (!session || session.ended || !session.child) return false
   if (!session.adapter.serializeControlResponse) return false
   const line = session.adapter.serializeControlResponse({
     requestId: args.requestId,
@@ -857,6 +970,10 @@ export function respondToPermissionRequest(
 export function recordInterrupted(tabId: string): void {
   const session = sessions.get(tabId)
   if (!session || session.ended) return
+  // Pre-spawn skeletons (terminalState='not-spawned') have no live turn to
+  // interrupt — skip emission. The hydrate path already emits its own
+  // synthetic `interrupted` for unfinished tails.
+  if (!session.child) return
   handleEvent(session, { kind: 'interrupted' })
 }
 
@@ -894,7 +1011,7 @@ export function popLastUserMessage(tabId: string): { popped: boolean; text: stri
  * Scan a seeded buffer's tail to detect an unfinished turn — the last
  * stateful event is a turn-starter (user-message/turn-init/tool-call) with
  * no subsequent terminal marker (result/process-exit/interrupted/
- * user-message-popped). Used by createChat to keep the renderer's
+ * user-message-popped). Used by hydrateSession to keep the renderer's
  * userMessagesSent/resultCount balance honest after a restore: without a
  * synthetic interrupted, inFlight would stay true forever even though the
  * fresh subprocess (post --resume) sits idle waiting for input.
@@ -944,15 +1061,22 @@ export function kill(tabId: string): void {
   const session = sessions.get(tabId)
   if (!session) return
   if (session.ended) return
+  // Pre-spawn skeleton (child=null): mark ended so subsequent operations short-
+  // circuit, but no process to signal.
+  if (!session.child) {
+    session.ended = true
+    return
+  }
+  const child = session.child
   try {
-    session.child.kill('SIGTERM')
+    child.kill('SIGTERM')
   } catch {
     // process may already be gone
   }
   setTimeout(() => {
     if (!session.ended) {
       try {
-        session.child.kill('SIGKILL')
+        child.kill('SIGKILL')
       } catch {
         // ignore
       }
@@ -966,7 +1090,7 @@ export function kill(tabId: string): void {
 export function removeSession(tabId: string): void {
   const session = sessions.get(tabId)
   if (!session) return
-  if (!session.ended) kill(tabId)
+  if (!session.ended && session.child) kill(tabId)
   sessions.delete(tabId)
 }
 
@@ -988,7 +1112,7 @@ function toInfo(session: Session): ChatSessionInfo {
     taskId: session.taskId,
     mode: session.mode,
     cwd: session.cwd,
-    pid: session.child.pid ?? null,
+    pid: session.child?.pid ?? null,
     startedAt: session.startedAt,
     ended: session.ended,
     chatMode: session.chatMode,
@@ -1022,6 +1146,8 @@ export function listChatSessions(): ChatSessionStateEntry[] {
   const result: ChatSessionStateEntry[] = []
   for (const session of sessions.values()) {
     if (session.ended) continue
+    // Skip lazy hydrate-only skeletons — they advertise no live process.
+    if (session.terminalState === 'not-spawned') continue
     result.push({
       sessionId: `${session.taskId}:${session.tabId}`,
       taskId: session.taskId,
@@ -1037,6 +1163,7 @@ export function listChatSessions(): ChatSessionStateEntry[] {
 export function getChatSessionState(sessionId: string): ChatTerminalState | null {
   for (const session of sessions.values()) {
     if (session.ended) continue
+    if (session.terminalState === 'not-spawned') continue
     if (`${session.taskId}:${session.tabId}` === sessionId) return session.terminalState
   }
   return null
@@ -1052,4 +1179,5 @@ export class ChatTransportError extends Error {
 /** For tests: inspect + clear state. */
 export function __resetForTests(): void {
   sessions.clear()
+  inFlightSpawns.clear()
 }

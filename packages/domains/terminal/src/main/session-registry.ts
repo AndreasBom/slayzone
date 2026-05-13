@@ -19,5 +19,9 @@ export function listSessions(): SessionInfo[] {
 export function getSessionState(sessionId: string): TerminalState | null {
   const ptyState = getPtyState(sessionId)
   if (ptyState !== null) return ptyState
-  return getChatSessionState(sessionId)
+  // getChatSessionState already filters `not-spawned` skeletons, so the
+  // remaining variants are all valid TerminalState members.
+  const chatState = getChatSessionState(sessionId)
+  if (chatState === 'not-spawned') return null
+  return chatState
 }

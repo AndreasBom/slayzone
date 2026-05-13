@@ -209,7 +209,7 @@ export function useTaskTerminals(taskId: string, defaultMode: TerminalMode): Use
 
       // Kill the OLD transport BEFORE flipping client state. If we flipped
       // first, React would mount the new transport (e.g. ChatPanel →
-      // chat.create) and the kill below would race-kill the fresh session.
+      // chat.hydrate) and the kill below would race-kill the fresh session.
       const sessionId = `${taskId}:${tabId}`
       try {
         if (tab.displayMode === 'xterm') {

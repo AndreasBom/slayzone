@@ -79,13 +79,25 @@ async function setup() {
   mgr.resetTransportDeps()
 }
 
+/**
+ * Test helper that mirrors the legacy `createChat` API: hydrate the session
+ * synchronously, then ensureSpawned. The production code paths invoke these
+ * two steps separately (`chat:hydrate` IPC + lazy spawn on `chat:send`); this
+ * helper keeps existing tests focused on the spawn-pipeline behavior they
+ * were originally written to exercise without duplicating wiring per test.
+ */
+async function createChat(opts: Parameters<typeof mgr.hydrateSession>[0]) {
+  mgr.hydrateSession(opts)
+  return mgr.ensureSpawned(opts.tabId)
+}
+
 console.log('\nChatTransportManager tests\n')
 
 await test('createChat: unknown mode → throws ChatTransportError', async () => {
   await setup()
   let err: Error | null = null
   try {
-    await mgr.createChat({
+    await createChat({
       tabId: 't1',
     taskId: 'task-test',
       mode: 'nonexistent-mode',
@@ -110,7 +122,7 @@ await test('createChat: missing binary → throws ChatTransportError', async () 
   })
   let err: Error | null = null
   try {
-    await mgr.createChat({
+    await createChat({
       tabId: 't2',
     taskId: 'task-test',
       mode: 'claude-code',
@@ -136,7 +148,7 @@ await test('createChat: pipes fixture NDJSON → emits typed events + ring buffe
     },
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-x',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -168,7 +180,7 @@ await test('getEventBufferSince: returns only events with seq > afterSeq', async
     broadcastEvent: () => {},
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-y',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -194,7 +206,7 @@ await test('persist callback fires on turn-init', async () => {
     broadcastExit: () => {},
   })
   const persisted: string[] = []
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-z',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -218,7 +230,7 @@ await test('sendUserMessage: writes NDJSON line to stdin', async () => {
     broadcastEvent: () => {},
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-msg',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -243,7 +255,7 @@ await test('sendToolResult: writes NDJSON tool_result envelope keyed by tool_use
     broadcastEvent: () => {},
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-tr',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -281,7 +293,7 @@ await test('sendControlRequest: writes envelope + resolves on matching control_r
     broadcastEvent: () => {},
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-ctrl',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -324,7 +336,7 @@ await test('sendControlRequest: rejects on error subtype', async () => {
     broadcastEvent: () => {},
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-ctrl-err',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -360,7 +372,7 @@ await test('respondToPermissionRequest: writes control_response success on stdin
     broadcastEvent: () => {},
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-perm',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -431,7 +443,7 @@ await test('invalid --resume: onInvalidResume fires + auto-retry with fresh sess
     broadcastEvent: () => {},
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-resume',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -491,7 +503,7 @@ await test('invalid --resume: failed spawn events never broadcast or persist', a
     broadcastStateChange: () => {},
     persistEvent: (tabId, _seq, event) => persistedEvents.push({ tabId, kind: event.kind }),
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-stage',
     taskId: 'task-stage',
     mode: 'claude-code',
@@ -544,7 +556,7 @@ await test('valid --resume: first healthy event flushes staged events in order',
     broadcastExit: () => {},
     broadcastStateChange: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-resume-ok',
     taskId: 'task-resume-ok',
     mode: 'claude-code',
@@ -610,7 +622,7 @@ await test('exit event: fires process-exit + chat:exit broadcast', async () => {
     broadcastEvent: (_tab, event) => eventKinds.push(event.kind),
     broadcastExit: (_tab, _sid, code, signal) => exits.push({ code, signal }),
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-exit',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -635,7 +647,7 @@ await test('exit event: chat:exit broadcast carries dying session sessionId', as
     broadcastEvent: () => {},
     broadcastExit: (_tab, sessionId) => exits.push({ sessionId }),
   })
-  const info = await mgr.createChat({
+  const info = await createChat({
     tabId: 'tab-exit-sid',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -669,7 +681,7 @@ await test('reset race: old session exit fires after removeSession — broadcast
   })
 
   // 1. Spawn session A.
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-reset',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -682,7 +694,7 @@ await test('reset race: old session exit fires after removeSession — broadcast
   // 2. Reset flow: kill + remove + create.
   mgr.kill('tab-reset')
   mgr.removeSession('tab-reset')
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-reset',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -717,7 +729,7 @@ await test('reset race: live session exit (not stale) still broadcasts', async (
     broadcastExit: (_tab, _sid, code) => exits.push({ code }),
     broadcastStateChange: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-live',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -754,7 +766,7 @@ await test('createChat: same tabId with different (taskId,cwd) → tears down zo
     broadcastStateChange: () => {},
   })
   // First create: taskA, cwd /a
-  await mgr.createChat({
+  await createChat({
     tabId: 'shared-tab',
     taskId: 'taskA',
     mode: 'claude-code',
@@ -765,7 +777,7 @@ await test('createChat: same tabId with different (taskId,cwd) → tears down zo
   expect(spawnCount).toBe(1)
 
   // Second create on same tabId but different identity → must tear down + respawn
-  await mgr.createChat({
+  await createChat({
     tabId: 'shared-tab',
     taskId: 'taskB',
     mode: 'claude-code',
@@ -796,7 +808,7 @@ await test('createChat: same tabId AND same identity → returns existing sessio
     broadcastExit: () => {},
     broadcastStateChange: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'idem-tab',
     taskId: 'taskA',
     mode: 'claude-code',
@@ -804,7 +816,7 @@ await test('createChat: same tabId AND same identity → returns existing sessio
     conversationId: null,
     providerFlags: [],
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'idem-tab',
     taskId: 'taskA',
     mode: 'claude-code',
@@ -828,7 +840,7 @@ await test('onStateChange: fires alongside broadcastStateChange so global listen
     broadcastStateChange: (sessionId, next, old) => broadcasts.push({ sessionId, next, old }),
     onStateChange: (sessionId, next, old) => globalNotices.push({ sessionId, next, old }),
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-state',
     taskId: 'task-state',
     mode: 'claude-code',
@@ -873,7 +885,7 @@ await test('createChat: initialBuffer with unfinished turn → emits synthetic i
     },
     { seq: 1, event: { kind: 'user-message', text: 'hello' } },
   ]
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-restore-mid',
     taskId: 'task-restore',
     mode: 'claude-code',
@@ -937,7 +949,7 @@ await test('createChat: initialBuffer with completed turn → no synthetic inter
       },
     },
   ]
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-restore-clean',
     taskId: 'task-restore',
     mode: 'claude-code',
@@ -960,7 +972,7 @@ await test('permission-request ExitPlanMode → auto-deny on stdin, no broadcast
     broadcastEvent: (_t, e) => events.push(e),
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-exitplan',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -1004,7 +1016,7 @@ await test('permission-request AskUserQuestion → broadcast, no auto-deny', asy
     broadcastEvent: (_t, e) => events.push(e),
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-ask',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -1042,7 +1054,7 @@ await test('permission-request → flips terminal state to idle + sets awaitingU
     broadcastStateChange: (_s, next, old) => stateChanges.push({ next, old }),
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-ask-state',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -1096,7 +1108,7 @@ await test('awaitingUserInput stays true across stderr / non-progress events', a
     broadcastStateChange: () => {},
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-ask-noclear',
     taskId: 'task-test',
     mode: 'claude-code',
@@ -1136,7 +1148,7 @@ await test('drainChatQueue skips when awaitingUserInput is true (mid AskUserQues
     broadcastStateChange: () => {},
     broadcastExit: () => {},
   })
-  await mgr.createChat({
+  await createChat({
     tabId: 'tab-ask-drain',
     taskId: 'task-test',
     mode: 'claude-code',

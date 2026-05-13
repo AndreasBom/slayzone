@@ -2,6 +2,7 @@ import type { IpcMain } from 'electron'
 import type { Database } from 'better-sqlite3'
 import {
   sendUserMessage,
+  ensureSpawned,
   getSessionInfo,
   getSessionTerminalState,
   isSessionAwaitingUserInput,
@@ -51,7 +52,21 @@ function broadcast(channel: 'chat:queue-changed' | 'chat:queue-drained', ...args
  * re-insert at head so the next drain retries.
  */
 export function drainChatQueue(db: Database, tabId: string): void {
-  if (getSessionTerminalState(tabId) !== 'idle') return
+  const state = getSessionTerminalState(tabId)
+  // Pre-spawn lazy trigger: a queued message arrived before the user ever
+  // sent one (so the subprocess was never started). Fire ensureSpawned —
+  // when it transitions through `starting → idle`, the transport's drainer
+  // hook re-enters this function and the post-spawn branch below pops the
+  // queue. Only trigger when there's actually something queued to avoid
+  // spinning up a process for nothing.
+  if (state === 'not-spawned') {
+    if (listChatQueue(db, tabId).length === 0) return
+    void ensureSpawned(tabId).catch((err) => {
+      console.error('[chat-queue] ensureSpawned failed for pre-spawn drain:', err)
+    })
+    return
+  }
+  if (state !== 'idle') return
   if (isSessionAwaitingUserInput(tabId)) return
   const info = getSessionInfo(tabId)
   if (!info || info.ended) return
