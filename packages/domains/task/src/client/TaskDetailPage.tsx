@@ -2263,17 +2263,17 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                       </span>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <button
-                            type="button"
+                          <ChevronDown
                             data-testid="terminal-mode-dropdown"
                             aria-label="Open provider menu"
-                            className="flex items-center justify-center size-5 rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors"
+                            role="button"
+                            className="size-3 cursor-pointer text-muted-foreground hover:text-foreground transition-colors"
                             onClick={(e) => {
                               e.preventDefault()
                               e.stopPropagation()
-                              const tab = (e.currentTarget as HTMLElement).closest('[data-tab-main="true"]')
+                              const tab = (e.currentTarget as unknown as HTMLElement).closest('[data-tab-main="true"]')
                               if (!tab) return
-                              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                              const rect = (e.currentTarget as unknown as HTMLElement).getBoundingClientRect()
                               tab.dispatchEvent(new MouseEvent('contextmenu', {
                                 bubbles: true,
                                 cancelable: true,
@@ -2282,9 +2282,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                                 clientY: rect.bottom,
                               }))
                             }}
-                          >
-                            <ChevronDown className="size-3" />
-                          </button>
+                          />
                         </TooltipTrigger>
                         <TooltipContent side="bottom">
                           Provider menu — click or right-click tab
