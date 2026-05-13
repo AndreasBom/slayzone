@@ -64,39 +64,11 @@ export function TreeDisplaySettings() {
       </PopoverTrigger>
       <PopoverContent className="w-[400px] p-3" align="start">
         <div className="space-y-6">
-          {/* Tasks — per-row markers + style */}
+          {/* Tasks (plural) — list-level visibility */}
           <div className="space-y-3">
             <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block">
               Tasks
             </span>
-            <Row
-              id="tree-show-status"
-              label="Show status"
-              hint="Status icon after the title"
-              checked={treeShowStatus}
-              onChange={setTreeShowStatus}
-            />
-            <Row
-              id="tree-show-priority"
-              label="Show priority"
-              hint="Priority icon after the title"
-              checked={treeShowPriority}
-              onChange={setTreeShowPriority}
-            />
-            <Row
-              id="tree-show-worktree"
-              label="Show worktree"
-              hint="Branch icon when task has a worktree"
-              checked={treeShowWorktree}
-              onChange={setTreeShowWorktree}
-            />
-            <Row
-              id="tree-cross-out-done"
-              label="Cross out completed"
-              hint="Strikethrough done tasks"
-              checked={treeCrossOutDone}
-              onChange={setTreeCrossOutDone}
-            />
             <Row
               id="tree-hide-closed"
               label="Hide closed"
@@ -145,6 +117,41 @@ export function TreeDisplaySettings() {
                 })}
               </div>
             </div>
+          </div>
+
+          {/* Task (singular) — per-row markers + style */}
+          <div className="space-y-3">
+            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block">
+              Task
+            </span>
+            <Row
+              id="tree-show-status"
+              label="Show status"
+              hint="Status icon after the title"
+              checked={treeShowStatus}
+              onChange={setTreeShowStatus}
+            />
+            <Row
+              id="tree-show-priority"
+              label="Show priority"
+              hint="Priority icon after the title"
+              checked={treeShowPriority}
+              onChange={setTreeShowPriority}
+            />
+            <Row
+              id="tree-show-worktree"
+              label="Show worktree"
+              hint="Branch icon when task has a worktree"
+              checked={treeShowWorktree}
+              onChange={setTreeShowWorktree}
+            />
+            <Row
+              id="tree-cross-out-done"
+              label="Cross out completed"
+              hint="Strikethrough done tasks"
+              checked={treeCrossOutDone}
+              onChange={setTreeCrossOutDone}
+            />
           </div>
 
           {/* Filters — status visibility */}
