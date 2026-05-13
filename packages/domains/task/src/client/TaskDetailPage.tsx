@@ -1657,7 +1657,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
 
   // CLI: open browser panel when requested by main process (slay tasks browser --panel=visible)
   useEffect(() => {
-    if (!isActive || !task) return
+    if (!task) return
     return window.api.app.onBrowserEnsurePanelOpen((taskId, url, tabId) => {
       if (taskId !== task.id) return
       if (tabId) {
@@ -1674,11 +1674,11 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
         handlePanelToggle('browser', true)
       }
     })
-  }, [isActive, task?.id, openDevServerInBrowser, handlePanelToggle, handleBrowserTabsChange])
+  }, [task?.id, openDevServerInBrowser, handlePanelToggle, handleBrowserTabsChange])
 
   // CLI: create a new browser tab with a server-supplied tabId (slay tasks browser new)
   useEffect(() => {
-    if (!isActive || !task) return
+    if (!task) return
     return window.api.app.onBrowserCreateTab(({ taskId, tabId, url, background }) => {
       if (taskId !== task.id) return
       handlePanelToggle('browser', true)
@@ -1689,7 +1689,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
       const nextActive = background && current.tabs.length > 0 ? current.activeTabId : tabId
       handleBrowserTabsChange({ tabs: [...current.tabs, newTab], activeTabId: nextActive })
     })
-  }, [isActive, task?.id, handlePanelToggle, handleBrowserTabsChange])
+  }, [task?.id, handlePanelToggle, handleBrowserTabsChange])
 
   const handleTagsChange = (newTagIds: string[]): void => {
     setTaskTagIds(newTagIds)
