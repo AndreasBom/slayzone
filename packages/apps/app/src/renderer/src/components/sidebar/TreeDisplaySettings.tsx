@@ -34,11 +34,13 @@ export function TreeDisplaySettings() {
   const treeOrderBy = useTabStore((s) => s.treeOrderBy)
   const treeOrderDir = useTabStore((s) => s.treeOrderDir)
   const treeGroupTemporary = useTabStore((s) => s.treeGroupTemporary)
+  const treeGroupPinned = useTabStore((s) => s.treeGroupPinned)
   const treeShowEmptyGroups = useTabStore((s) => s.treeShowEmptyGroups)
   const setTreeGroupBy = useTabStore((s) => s.setTreeGroupBy)
   const setTreeOrderBy = useTabStore((s) => s.setTreeOrderBy)
   const setTreeOrderDir = useTabStore((s) => s.setTreeOrderDir)
   const setTreeGroupTemporary = useTabStore((s) => s.setTreeGroupTemporary)
+  const setTreeGroupPinned = useTabStore((s) => s.setTreeGroupPinned)
   const setTreeShowEmptyGroups = useTabStore((s) => s.setTreeShowEmptyGroups)
   const setTreeShowStatus = useTabStore((s) => s.setTreeShowStatus)
   const setTreeShowPriority = useTabStore((s) => s.setTreeShowPriority)
@@ -124,6 +126,20 @@ export function TreeDisplaySettings() {
               checked={treeShowEmptyGroups}
               onChange={setTreeShowEmptyGroups}
             />
+            <Row
+              id="tree-group-pinned"
+              label="Group pinned tasks"
+              hint="Show pinned tasks in their own section at the top"
+              checked={treeGroupPinned}
+              onChange={setTreeGroupPinned}
+            />
+            <Row
+              id="tree-group-temporary"
+              label="Group temporary tasks"
+              hint="Show temporary tasks in their own section at the top"
+              checked={treeGroupTemporary}
+              onChange={setTreeGroupTemporary}
+            />
           </div>
 
           {/* Tasks (plural) — list-level visibility */}
@@ -143,17 +159,6 @@ export function TreeDisplaySettings() {
               checked={treeShowTemporary}
               onChange={setTreeShowTemporary}
             />
-            {treeShowTemporary && (
-              <div className="pl-4 border-l border-border/40 space-y-3">
-                <Row
-                  id="tree-group-temporary"
-                  label="Group temporary tasks"
-                  hint="Show temporary tasks in their own section at the top"
-                  checked={treeGroupTemporary}
-                  onChange={setTreeGroupTemporary}
-                />
-              </div>
-            )}
             <Row
               id="tree-show-subtasks"
               label="Show sub-tasks"

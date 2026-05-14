@@ -3,11 +3,13 @@ import { DEFAULT_COLUMNS, type ColumnConfig } from '@slayzone/projects/shared'
 import type { TreeGroupBy, TreeOrderBy, TreeOrderDir } from '@slayzone/settings'
 
 export const TEMP_GROUP_KEY = '__temporary__'
+export const PINNED_GROUP_KEY = '__pinned__'
 
 export interface TreeGroup {
   /** groupValue — matches what `moveTask` expects (status id, or 'p1'..'p5'). */
   key: string
   isTemp: boolean
+  isPinned: boolean
   tasks: Task[]
 }
 
@@ -50,12 +52,15 @@ export interface GroupOpts {
   showEmpty: boolean
   statusFilter: Set<string>
   groupTemporary: boolean
+  groupPinned: boolean
+  pinnedIds: Set<string>
 }
 
 /**
- * Bucket roots into groups according to `groupBy`. Temp tasks split into their
- * own group when `groupTemporary` is on; otherwise mixed into their natural
- * status/priority bucket.
+ * Bucket roots into groups according to `groupBy`. Pinned tasks split into
+ * their own group when `groupPinned` is on (winning over temp). Temp tasks
+ * split into their own group when `groupTemporary` is on. Otherwise mixed
+ * into their natural status/priority bucket.
  *
  * When `showEmpty` is on:
  * - groupBy='status': render every column from `columns` even if empty, but
@@ -70,15 +75,20 @@ export function groupTreeRows(
   opts: GroupOpts
 ): TreeGroup[] {
   const groups: TreeGroup[] = []
+  const pinnedTasks: Task[] = []
   const tempTasks: Task[] = []
   const persistent: Task[] = []
   for (const t of roots) {
-    if (opts.groupTemporary && t.is_temporary) tempTasks.push(t)
+    if (opts.groupPinned && opts.pinnedIds.has(t.id)) pinnedTasks.push(t)
+    else if (opts.groupTemporary && t.is_temporary) tempTasks.push(t)
     else persistent.push(t)
   }
 
+  if (pinnedTasks.length > 0) {
+    groups.push({ key: PINNED_GROUP_KEY, isTemp: false, isPinned: true, tasks: pinnedTasks })
+  }
   if (tempTasks.length > 0) {
-    groups.push({ key: TEMP_GROUP_KEY, isTemp: true, tasks: tempTasks })
+    groups.push({ key: TEMP_GROUP_KEY, isTemp: true, isPinned: false, tasks: tempTasks })
   }
 
   if (groupBy === 'status') {
@@ -93,11 +103,11 @@ export function groupTreeRows(
       const ordered = [...effective].sort((a, b) => a.position - b.position)
       for (const col of ordered) {
         if (opts.statusFilter.size > 0 && !opts.statusFilter.has(col.id)) continue
-        groups.push({ key: col.id, isTemp: false, tasks: byKey.get(col.id) ?? [] })
+        groups.push({ key: col.id, isTemp: false, isPinned: false, tasks: byKey.get(col.id) ?? [] })
         byKey.delete(col.id)
       }
       // Any leftover statuses not in columns config (legacy).
-      for (const [k, arr] of byKey) groups.push({ key: k, isTemp: false, tasks: arr })
+      for (const [k, arr] of byKey) groups.push({ key: k, isTemp: false, isPinned: false, tasks: arr })
     } else {
       // Preserve column position order for known statuses.
       const seen = new Set<string>()
@@ -106,13 +116,13 @@ export function groupTreeRows(
         for (const col of ordered) {
           const arr = byKey.get(col.id)
           if (!arr || arr.length === 0) continue
-          groups.push({ key: col.id, isTemp: false, tasks: arr })
+          groups.push({ key: col.id, isTemp: false, isPinned: false, tasks: arr })
           seen.add(col.id)
         }
       }
       for (const [k, arr] of byKey) {
         if (seen.has(k)) continue
-        groups.push({ key: k, isTemp: false, tasks: arr })
+        groups.push({ key: k, isTemp: false, isPinned: false, tasks: arr })
       }
     }
     return groups
@@ -130,7 +140,7 @@ export function groupTreeRows(
   for (const p of prioRange) {
     const arr = byPrio.get(p) ?? []
     if (!opts.showEmpty && arr.length === 0) continue
-    groups.push({ key: `p${p}`, isTemp: false, tasks: arr })
+    groups.push({ key: `p${p}`, isTemp: false, isPinned: false, tasks: arr })
   }
   return groups
 }

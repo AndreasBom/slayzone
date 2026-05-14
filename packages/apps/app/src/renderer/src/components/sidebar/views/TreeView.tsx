@@ -21,7 +21,7 @@ import { cn, TerminalProgressDot, PriorityIcon, getColumnStatusStyle, Tooltip, T
 import { type Task } from '@slayzone/task/shared'
 import { useDialogStore, useTabStore } from '@slayzone/settings'
 import { PRIORITY_LABELS } from '@slayzone/tasks'
-import { groupTreeRows, orderTreeRows, type TreeGroup } from './treeGrouping'
+import { groupTreeRows, orderTreeRows, PINNED_GROUP_KEY, type TreeGroup } from './treeGrouping'
 import { useActiveSessionTaskIds } from '@/components/agent-status/useIdleTasks'
 import { useStaleSkillCounts } from '@slayzone/ai-config/client'
 import { TreeDisplaySettings } from '../TreeDisplaySettings'
@@ -114,6 +114,7 @@ interface TaskBranchCtx {
   treeShowWorktree: boolean
   treeCrossOutDone: boolean
   treeGroupBy: 'status' | 'priority'
+  treeGroupPinned: boolean
   onTaskClick?: (taskId: string) => void
   onCloseTab?: (taskId: string) => void
   onOpenTaskInBackground?: (taskId: string) => void
@@ -121,7 +122,13 @@ interface TaskBranchCtx {
   dragEnabled: boolean
 }
 
-function rowGroupValue(task: Task, groupBy: 'status' | 'priority'): string {
+function rowGroupValue(
+  task: Task,
+  groupBy: 'status' | 'priority',
+  groupPinned: boolean,
+  pinnedSet: Set<string>
+): string {
+  if (groupPinned && pinnedSet.has(task.id)) return PINNED_GROUP_KEY
   if (groupBy === 'priority') return `p${typeof task.priority === 'number' ? task.priority : 5}`
   return task.status
 }
@@ -141,7 +148,7 @@ function TaskRow({
   const dragData: TaskRowDragData = {
     kind: 'task',
     projectId: task.project_id,
-    groupValue: rowGroupValue(task, ctx.treeGroupBy),
+    groupValue: rowGroupValue(task, ctx.treeGroupBy, ctx.treeGroupPinned, ctx.pinnedSet),
     parentId: task.parent_id ?? null,
   }
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -401,6 +408,7 @@ export function TreeView({
   const treeOrderBy = useTabStore((s) => s.treeOrderBy)
   const treeOrderDir = useTabStore((s) => s.treeOrderDir)
   const treeGroupTemporary = useTabStore((s) => s.treeGroupTemporary)
+  const treeGroupPinned = useTabStore((s) => s.treeGroupPinned)
   const treeShowEmptyGroups = useTabStore((s) => s.treeShowEmptyGroups)
 
   const tabs = useTabStore((s) => s.tabs)
@@ -543,11 +551,13 @@ export function TreeView({
         showEmpty: treeShowEmptyGroups,
         statusFilter,
         groupTemporary: treeGroupTemporary,
+        groupPinned: treeGroupPinned,
+        pinnedIds: pinnedSet,
       })
       result.set(pid, groups)
     }
     return result
-  }, [rootTasksByProject, columnsByProjectId, treeGroupBy, treeShowEmptyGroups, statusFilter, treeGroupTemporary])
+  }, [rootTasksByProject, columnsByProjectId, treeGroupBy, treeShowEmptyGroups, statusFilter, treeGroupTemporary, treeGroupPinned, pinnedSet])
 
   const activeTaskId = useTabStore((s) => {
     const tab = s.tabs[s.activeTabIndex]
@@ -623,9 +633,12 @@ export function TreeView({
     if (!groups) return
     const groupByKey = new Map(groups.map((g) => [g.key, g]))
 
-    // Block drops into the temp group — temp tasks aren't draggable + drop
-    // target there has no valid status/priority semantic.
-    if (overData.kind === 'group' && groupByKey.get(overData.groupValue)?.isTemp) return
+    // Block drops into the temp/pinned groups — they have no valid
+    // status/priority semantic.
+    if (overData.kind === 'group') {
+      const g = groupByKey.get(overData.groupValue)
+      if (g?.isTemp || g?.isPinned) return
+    }
 
     if (overData.kind === 'group') {
       const destValue = overData.groupValue
@@ -651,7 +664,7 @@ export function TreeView({
     } else {
       // Cross-group drag onto a task — move source into target's group at target's index.
       const destGroup = groupByKey.get(overData.groupValue)
-      if (!destGroup || destGroup.isTemp) return
+      if (!destGroup || destGroup.isTemp || destGroup.isPinned) return
       const newIdx = destGroup.tasks.findIndex((t) => t.id === over.id)
       if (newIdx === -1) return
       onTaskMove?.(active.id as string, overData.groupValue, newIdx, treeGroupBy)
@@ -663,6 +676,7 @@ export function TreeView({
     projectId: string,
     label: string
   ): ReactNode => {
+    if (group.isPinned) return null
     if (group.isTemp && !onCreateTemporaryTask) return null
     return (
       <button
@@ -697,7 +711,11 @@ export function TreeView({
       let label: string
       let Icon: typeof Clock | null = null
       let iconClass: string | undefined
-      if (g.isTemp) {
+      if (g.isPinned) {
+        label = 'Pinned'
+        Icon = Pin
+        iconClass = 'text-muted-foreground/60 -rotate-45 fill-current'
+      } else if (g.isTemp) {
         label = 'Temporary'
         Icon = Clock
         iconClass = 'text-muted-foreground/60'
@@ -731,9 +749,8 @@ export function TreeView({
           </SortableContext>
         </>
       )
-      // Temp tasks aren't draggable + their group has no valid drop semantic,
-      // so skip the droppable wrapper.
-      if (g.isTemp) return <div key={g.key}>{groupBody}</div>
+      // Temp/pinned groups have no valid drop semantic, so skip droppable wrapper.
+      if (g.isTemp || g.isPinned) return <div key={g.key}>{groupBody}</div>
       return (
         <StatusGroupDroppable key={g.key} projectId={projectId} groupValue={g.key}>
           {groupBody}
@@ -764,6 +781,7 @@ export function TreeView({
       treeShowWorktree,
       treeCrossOutDone,
       treeGroupBy,
+      treeGroupPinned,
       onTaskClick,
       onCloseTab,
       onOpenTaskInBackground,

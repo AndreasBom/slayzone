@@ -88,6 +88,9 @@ interface TabState {
   // When true, temporary tasks render in their own "Temporary" group at the top.
   // When false, they mix into their natural status/priority bucket.
   treeGroupTemporary: boolean
+  // When true, pinned tasks render in their own "Pinned" group at the top.
+  // When false, they mix into their natural status/priority bucket.
+  treeGroupPinned: boolean
   // Show group headers for groups with zero tasks (respecting treeStatusFilter).
   treeShowEmptyGroups: boolean
   // projectId → taskId of last active task tab, or 'home' if home tab was last active
@@ -120,6 +123,7 @@ interface TabState {
   setTreeOrderBy: (orderBy: TreeOrderBy) => void
   setTreeOrderDir: (dir: TreeOrderDir) => void
   setTreeGroupTemporary: (group: boolean) => void
+  setTreeGroupPinned: (group: boolean) => void
   setTreeShowEmptyGroups: (show: boolean) => void
   toggleTreePinnedTask: (taskId: string) => void
   setTabs: (tabs: Tab[]) => void
@@ -132,7 +136,7 @@ interface TabState {
   reopenClosedTab: () => void
 
   // Internal
-  _loadState: (state: { tabs: Tab[]; activeTabIndex: number; activeView?: ActiveView; selectedProjectId: string; projectScopedTabs?: boolean; sidebarView?: string; sidebarWidth?: number | null; sidebarAutoHide?: boolean; treeStatusFilter?: string[]; treeShowStatus?: boolean; treeShowPriority?: boolean; treeShowSubtasks?: boolean; treeShowAllSubtasks?: boolean; treeShowAllUndoneSubtasks?: boolean; treeSubtaskMode?: LegacyTreeSubtaskMode; treeIncludeAllSubtasks?: boolean; treeCrossOutDone?: boolean; treeShowOnlyActive?: boolean; treeShowTemporary?: boolean; treeHideInactive?: boolean; treeHideClosed?: boolean; treeShowWorktree?: boolean; treePinnedTaskIds?: string[]; treeGroupBy?: TreeGroupBy; treeOrderBy?: TreeOrderBy; treeOrderDir?: TreeOrderDir; treeGroupTemporary?: boolean; treeShowEmptyGroups?: boolean; projectLastActiveTab?: Record<string, string>; closedTabs?: TaskTab[] }) => void
+  _loadState: (state: { tabs: Tab[]; activeTabIndex: number; activeView?: ActiveView; selectedProjectId: string; projectScopedTabs?: boolean; sidebarView?: string; sidebarWidth?: number | null; sidebarAutoHide?: boolean; treeStatusFilter?: string[]; treeShowStatus?: boolean; treeShowPriority?: boolean; treeShowSubtasks?: boolean; treeShowAllSubtasks?: boolean; treeShowAllUndoneSubtasks?: boolean; treeSubtaskMode?: LegacyTreeSubtaskMode; treeIncludeAllSubtasks?: boolean; treeCrossOutDone?: boolean; treeShowOnlyActive?: boolean; treeShowTemporary?: boolean; treeHideInactive?: boolean; treeHideClosed?: boolean; treeShowWorktree?: boolean; treePinnedTaskIds?: string[]; treeGroupBy?: TreeGroupBy; treeOrderBy?: TreeOrderBy; treeOrderDir?: TreeOrderDir; treeGroupTemporary?: boolean; treeGroupPinned?: boolean; treeShowEmptyGroups?: boolean; projectLastActiveTab?: Record<string, string>; closedTabs?: TaskTab[] }) => void
 }
 
 function findWorktreeInsertIndex(taskId: string, tabs: Tab[], lookup: TaskLookup): number {
@@ -184,6 +188,7 @@ export const useTabStore = create<TabState>()(
     treeOrderBy: 'manual',
     treeOrderDir: 'asc',
     treeGroupTemporary: true,
+    treeGroupPinned: true,
     treeShowEmptyGroups: false,
     projectLastActiveTab: {},
     _taskLookup: { tasks: [], projects: [] },
@@ -242,6 +247,7 @@ export const useTabStore = create<TabState>()(
     setTreeOrderBy: (orderBy) => set({ treeOrderBy: orderBy }),
     setTreeOrderDir: (dir) => set({ treeOrderDir: dir }),
     setTreeGroupTemporary: (group) => set({ treeGroupTemporary: group }),
+    setTreeGroupPinned: (group) => set({ treeGroupPinned: group }),
     setTreeShowEmptyGroups: (show) => set({ treeShowEmptyGroups: show }),
 
     toggleTreePinnedTask: (taskId) =>
@@ -412,6 +418,7 @@ export const useTabStore = create<TabState>()(
             : 'manual',
         treeOrderDir: state.treeOrderDir === 'desc' ? 'desc' : 'asc',
         treeGroupTemporary: typeof state.treeGroupTemporary === 'boolean' ? state.treeGroupTemporary : true,
+        treeGroupPinned: typeof state.treeGroupPinned === 'boolean' ? state.treeGroupPinned : true,
         treeShowEmptyGroups: typeof state.treeShowEmptyGroups === 'boolean' ? state.treeShowEmptyGroups : false,
         projectLastActiveTab: state.projectLastActiveTab && typeof state.projectLastActiveTab === 'object' ? state.projectLastActiveTab : {},
         closedTabs: Array.isArray(state.closedTabs)
@@ -453,7 +460,7 @@ export const tabStoreReady: Promise<void> = (typeof window !== 'undefined' && wi
 let _debounceTimer: ReturnType<typeof setTimeout> | null = null
 
 useTabStore.subscribe(
-  (state) => ({ tabs: state.tabs, activeTabIndex: state.activeTabIndex, activeView: state.activeView, selectedProjectId: state.selectedProjectId, projectScopedTabs: state.projectScopedTabs, sidebarView: state.sidebarView, sidebarWidth: state.sidebarWidth, sidebarAutoHide: state.sidebarAutoHide, treeStatusFilter: state.treeStatusFilter, treeShowStatus: state.treeShowStatus, treeShowPriority: state.treeShowPriority, treeShowSubtasks: state.treeShowSubtasks, treeShowAllSubtasks: state.treeShowAllSubtasks, treeShowAllUndoneSubtasks: state.treeShowAllUndoneSubtasks, treeCrossOutDone: state.treeCrossOutDone, treeShowOnlyActive: state.treeShowOnlyActive, treeShowTemporary: state.treeShowTemporary, treeShowWorktree: state.treeShowWorktree, treePinnedTaskIds: state.treePinnedTaskIds, treeGroupBy: state.treeGroupBy, treeOrderBy: state.treeOrderBy, treeOrderDir: state.treeOrderDir, treeGroupTemporary: state.treeGroupTemporary, treeShowEmptyGroups: state.treeShowEmptyGroups, projectLastActiveTab: state.projectLastActiveTab, closedTabs: state.closedTabs }),
+  (state) => ({ tabs: state.tabs, activeTabIndex: state.activeTabIndex, activeView: state.activeView, selectedProjectId: state.selectedProjectId, projectScopedTabs: state.projectScopedTabs, sidebarView: state.sidebarView, sidebarWidth: state.sidebarWidth, sidebarAutoHide: state.sidebarAutoHide, treeStatusFilter: state.treeStatusFilter, treeShowStatus: state.treeShowStatus, treeShowPriority: state.treeShowPriority, treeShowSubtasks: state.treeShowSubtasks, treeShowAllSubtasks: state.treeShowAllSubtasks, treeShowAllUndoneSubtasks: state.treeShowAllUndoneSubtasks, treeCrossOutDone: state.treeCrossOutDone, treeShowOnlyActive: state.treeShowOnlyActive, treeShowTemporary: state.treeShowTemporary, treeShowWorktree: state.treeShowWorktree, treePinnedTaskIds: state.treePinnedTaskIds, treeGroupBy: state.treeGroupBy, treeOrderBy: state.treeOrderBy, treeOrderDir: state.treeOrderDir, treeGroupTemporary: state.treeGroupTemporary, treeGroupPinned: state.treeGroupPinned, treeShowEmptyGroups: state.treeShowEmptyGroups, projectLastActiveTab: state.projectLastActiveTab, closedTabs: state.closedTabs }),
   (slice) => {
     if (!useTabStore.getState().isLoaded) return
     if (_debounceTimer) clearTimeout(_debounceTimer)
