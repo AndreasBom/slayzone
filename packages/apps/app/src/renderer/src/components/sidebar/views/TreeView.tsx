@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { BookOpen, ChevronDown, Clock, GitBranch, Home, Pin, Plus, Power, Search, Settings, X } from 'lucide-react'
 import * as Collapsible from '@radix-ui/react-collapsible'
 import {
@@ -110,6 +110,7 @@ interface TaskBranchCtx {
   taskProgress?: Map<string, number>
   columnsByProjectId?: Map<string, import('@slayzone/projects/shared').ColumnConfig[] | null>
   pinnedSet: Set<string>
+  selectedTaskIds: Set<string>
   treeShowStatus: boolean
   treeShowPriority: boolean
   treeShowWorktree: boolean
@@ -117,10 +118,52 @@ interface TaskBranchCtx {
   treeGroupBy: 'status' | 'priority'
   treeGroupPinned: boolean
   onTaskClick?: (taskId: string) => void
+  onRowSelectClick: (event: ReactMouseEvent<HTMLButtonElement>, taskId: string) => void
   onCloseTab?: (taskId: string) => void
   onOpenTaskInBackground?: (taskId: string) => void
   taskContextMenuRender?: SidebarViewContext['taskContextMenuRender']
   dragEnabled: boolean
+  editingTaskId: string | null
+  onStartEdit: (taskId: string) => void
+  onCommitEdit: (taskId: string, value: string) => void
+  onCancelEdit: () => void
+}
+
+function RenameInput({
+  initialValue,
+  onCommit,
+  onCancel,
+}: {
+  initialValue: string
+  onCommit: (value: string) => void
+  onCancel: () => void
+}): ReactNode {
+  const [value, setValue] = useState(initialValue)
+  return (
+    <input
+      autoFocus
+      type="text"
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation()
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          onCommit(value)
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          onCancel()
+        }
+      }}
+      onBlur={() => onCommit(value)}
+      className="flex-1 min-w-0 rounded bg-input/40 px-1 py-0.5 text-sm text-foreground outline-none ring-1 ring-ring"
+    />
+  )
 }
 
 function rowGroupValue(
@@ -145,7 +188,8 @@ function TaskRow({
   ancestorFlags: boolean[]
   ctx: TaskBranchCtx
 }): ReactNode {
-  const draggable = ctx.dragEnabled && !task.is_temporary
+  const isEditing = ctx.editingTaskId === task.id
+  const draggable = ctx.dragEnabled && !task.is_temporary && !isEditing
   const dragData: TaskRowDragData = {
     kind: 'task',
     projectId: task.project_id,
@@ -171,6 +215,7 @@ function TaskRow({
 
   const isActive = ctx.activeTaskId === task.id
   const isOpenTab = ctx.openTabTaskIds.has(task.id)
+  const isSelected = ctx.selectedTaskIds.has(task.id)
   const termState = ctx.terminalStates?.get(task.id)
   const progress = ctx.taskProgress?.get(task.id)
   const isDone = ctx.doneTaskIds?.has(task.id) ?? false
@@ -185,7 +230,8 @@ function TaskRow({
       data-sidebar-tree-item="task"
       data-task-id={task.id}
       data-active={isActive ? 'true' : undefined}
-      onClick={() => ctx.onTaskClick?.(task.id)}
+      data-selected={isSelected ? 'true' : undefined}
+      onClick={(e) => ctx.onRowSelectClick(e, task.id)}
       onAuxClick={(e) => {
         if (e.button !== 1) return
         e.preventDefault()
@@ -203,11 +249,13 @@ function TaskRow({
       <span
         className={cn(
           'relative flex flex-1 items-center gap-2 rounded-md px-1.5 py-1 min-w-0 transition-colors',
-          isActive
-            ? 'bg-white/10 text-foreground'
-            : isOpenTab
-              ? 'text-foreground hover:bg-accent/40'
-              : 'text-muted-foreground/45 hover:bg-accent/40 hover:text-accent-foreground'
+          isSelected
+            ? 'bg-accent/60 text-accent-foreground ring-1 ring-accent ring-inset'
+            : isActive
+              ? 'bg-white/10 text-foreground'
+              : isOpenTab
+                ? 'text-foreground hover:bg-accent/40'
+                : 'text-muted-foreground/45 hover:bg-accent/40 hover:text-accent-foreground'
         )}
       >
         <TerminalProgressDot
@@ -218,14 +266,27 @@ function TaskRow({
           alwaysShow
           tooltipSide="right"
         />
-        <span
-          className={cn(
-            'truncate flex-1',
-            ctx.treeCrossOutDone && isDone && 'line-through text-muted-foreground/60'
-          )}
-        >
-          {task.title || 'Untitled'}
-        </span>
+        {isEditing ? (
+          <RenameInput
+            initialValue={task.title || ''}
+            onCommit={(v) => ctx.onCommitEdit(task.id, v)}
+            onCancel={ctx.onCancelEdit}
+          />
+        ) : (
+          <span
+            onDoubleClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              ctx.onStartEdit(task.id)
+            }}
+            className={cn(
+              'truncate flex-1',
+              ctx.treeCrossOutDone && isDone && 'line-through text-muted-foreground/60'
+            )}
+          >
+            {task.title || 'Untitled'}
+          </span>
+        )}
         {task.needs_attention && (
           <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
             Attention
@@ -638,6 +699,16 @@ export function TreeView({
     setActiveDragTaskId(null)
   }, [])
 
+  // Multi-selection — Shift = sibling range, Cmd/Ctrl = toggle individual,
+  // plain click = open + clear selection. anchor is the last single/cmd-click
+  // target, used as the base point for shift-range expansion.
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set())
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
+
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
+  const handleStartEdit = useCallback((id: string) => setEditingTaskId(id), [])
+  const handleCancelEdit = useCallback(() => setEditingTaskId(null), [])
+
   // Full task lookup (all tasks, not just visible) for cycle detection +
   // orderBy field comparison. Visible-only maps would miss collapsed parents
   // and yield false negatives on cycle check.
@@ -646,6 +717,15 @@ export function TreeView({
     for (const t of tasks) m.set(t.id, t)
     return m
   }, [tasks])
+
+  const handleCommitEdit = useCallback((id: string, value: string) => {
+    setEditingTaskId(null)
+    const trimmed = value.trim()
+    if (trimmed.length === 0) return
+    const current = (tasksById.get(id)?.title ?? '').trim()
+    if (trimmed === current) return
+    onTaskFieldUpdate?.(id, { title: trimmed })
+  }, [tasksById, onTaskFieldUpdate])
 
   // Drop into descendant of source = cycle. Walk parent chain from target
   // upward; if it hits source, abort the reparent.
@@ -681,6 +761,59 @@ export function TreeView({
     }
     // 'manual' / 'created' / 'title' — no inheritance.
   }, [treeOrderBy, tasksById, onTaskFieldUpdate])
+
+  // Sibling list of `taskId` in tree render order, scoped to project.
+  // Subtask → parent's children; root → all roots across groups (parent=null).
+  const getSiblings = useCallback((taskId: string): Task[] => {
+    const t = tasksById.get(taskId)
+    if (!t) return []
+    if (t.parent_id) return childrenByParent.get(t.parent_id) ?? []
+    const groups = rootGroupsByProject.get(t.project_id) ?? []
+    return groups.flatMap((g) => g.tasks)
+  }, [tasksById, childrenByParent, rootGroupsByProject])
+
+  const handleRowSelectClick = useCallback((event: ReactMouseEvent<HTMLButtonElement>, taskId: string) => {
+    const isShift = event.shiftKey
+    const isCmd = event.metaKey || event.ctrlKey
+
+    if (isShift && selectionAnchorId && selectionAnchorId !== taskId) {
+      event.preventDefault()
+      const anchor = tasksById.get(selectionAnchorId)
+      const target = tasksById.get(taskId)
+      if (!anchor || !target) return
+      // Range only when same parent (true siblings). Different-parent shift
+      // falls back to "add target" semantics.
+      if ((anchor.parent_id ?? null) !== (target.parent_id ?? null)) {
+        setSelectedTaskIds((prev) => new Set([...prev, taskId]))
+        return
+      }
+      const siblings = getSiblings(selectionAnchorId)
+      const aIdx = siblings.findIndex((s) => s.id === selectionAnchorId)
+      const tIdx = siblings.findIndex((s) => s.id === taskId)
+      if (aIdx === -1 || tIdx === -1) return
+      const [lo, hi] = aIdx < tIdx ? [aIdx, tIdx] : [tIdx, aIdx]
+      setSelectedTaskIds(new Set(siblings.slice(lo, hi + 1).map((s) => s.id)))
+      // Anchor stays — subsequent shift-clicks pivot from same point.
+      return
+    }
+
+    if (isCmd) {
+      event.preventDefault()
+      setSelectedTaskIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(taskId)) next.delete(taskId)
+        else next.add(taskId)
+        return next
+      })
+      setSelectionAnchorId(taskId)
+      return
+    }
+
+    // Plain click — clear selection, set anchor, open task.
+    setSelectedTaskIds(new Set([taskId]))
+    setSelectionAnchorId(taskId)
+    onTaskClick?.(taskId)
+  }, [selectionAnchorId, tasksById, getSiblings, onTaskClick])
 
   // Drop semantics: source always becomes a SIBLING of the target row. Never
   // a child. Target's parent → source's new parent. Target root → source root
@@ -919,6 +1052,7 @@ export function TreeView({
       taskProgress,
       columnsByProjectId,
       pinnedSet,
+      selectedTaskIds,
       treeShowStatus,
       treeShowPriority,
       treeShowWorktree,
@@ -926,10 +1060,15 @@ export function TreeView({
       treeGroupBy,
       treeGroupPinned,
       onTaskClick,
+      onRowSelectClick: handleRowSelectClick,
       onCloseTab,
       onOpenTaskInBackground,
       taskContextMenuRender,
       dragEnabled,
+      editingTaskId,
+      onStartEdit: handleStartEdit,
+      onCommitEdit: handleCommitEdit,
+      onCancelEdit: handleCancelEdit,
     }
     return (
       <Collapsible.Root
