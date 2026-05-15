@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { MoreHorizontal, Archive, Trash2, AlertTriangle, Loader2, Terminal as TerminalIcon, Globe, Settings2, GitBranch, FileCode, ChevronDown, ChevronRight, Flag, Plus, GripVertical, X, Info, CheckCircle2, XCircle, Stethoscope, Cpu, Circle, Repeat, LayoutTemplate, Paperclip, Power, Eye, Trophy, Award, Sparkles, PartyPopper, Shuffle, Swords, Flame, PanelsTopLeft } from 'lucide-react'
+import { MoreHorizontal, Archive, Trash2, AlertTriangle, Loader2, Terminal as TerminalIcon, Globe, Settings2, GitBranch, FileCode, ChevronDown, ChevronRight, Flag, Plus, GripVertical, X, Info, Check, CheckCircle2, XCircle, Stethoscope, Cpu, Circle, Repeat, LayoutTemplate, Paperclip, Power, Eye, Trophy, Award, Sparkles, PartyPopper, Shuffle, Swords, Flame, PanelsTopLeft } from 'lucide-react'
 import { IconArrowsVertical, IconArrowsMaximize } from '@tabler/icons-react'
 import { DescriptionDialog } from './DescriptionDialog'
 import { ArtifactsPanel, type ArtifactsPanelHandle } from './ArtifactsPanel'
@@ -2087,14 +2087,23 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
       {/* Split view: terminal | browser | settings | git diff */}
       <div id="task-panels" ref={splitContainerRef} className="flex-1 flex min-h-0">
         {isTaskCompleted && !openCompletedAnyway ? (() => {
+          const actionButtonClass = "inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-surface-1/80 backdrop-blur px-3 py-1.5 text-sm cursor-pointer hover:bg-accent"
           const actionButtons = (
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+            <div className="mt-6 grid grid-cols-2 gap-2 w-full max-w-sm mx-auto">
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-1/80 backdrop-blur px-3 py-1.5 text-sm cursor-pointer hover:bg-accent"
+                className={actionButtonClass}
+                onClick={() => onCloseTab(task.id)}
+              >
+                <Check className="size-4 text-emerald-400" strokeWidth={3} />
+                Close task
+              </button>
+              <button
+                type="button"
+                className={actionButtonClass}
                 onClick={() => setOpenCompletedAnyway(true)}
               >
-                <Eye className="size-4" strokeWidth={3} />
+                <Eye className="size-4 text-sky-400" strokeWidth={3} />
                 Show details
               </button>
               {resolveColumns(project?.columns_config)
@@ -2106,7 +2115,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                     <button
                       key={col.id}
                       type="button"
-                      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-1/80 backdrop-blur px-3 py-1.5 text-sm cursor-pointer hover:bg-accent"
+                      className={actionButtonClass}
                       onClick={async () => {
                         const updated = await window.api.db.updateTask({ id: task.id, status: col.id })
                         handleTaskUpdate(updated)
