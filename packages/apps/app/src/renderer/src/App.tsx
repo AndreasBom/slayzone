@@ -1117,7 +1117,7 @@ function App(): React.JSX.Element {
   const handleTaskClick = (task: Task, e: { metaKey: boolean; shiftKey?: boolean }): void => { if (e.metaKey) guardedOpenTaskInBackground(task.id); else openTask(task.id) }
   const handleTaskMove = (taskId: string, newColumnId: string, targetIndex: number): void => { moveTask(taskId, newColumnId, targetIndex, getViewConfig(filter).groupBy) }
   const handleTaskBulkMove = (taskIds: string[], newColumnId: string, targetIndex: number): void => { bulkMove(taskIds, newColumnId, targetIndex, getViewConfig(filter).groupBy) }
-  const handleSidebarTaskMove = (taskId: string, newColumnId: string, targetIndex: number, groupBy: 'status' | 'priority'): void => { moveTask(taskId, newColumnId, targetIndex, groupBy) }
+  const handleSidebarTaskMove = (taskId: string, newColumnId: string, targetIndex: number, groupBy: 'none' | 'status' | 'priority'): void => { moveTask(taskId, newColumnId, targetIndex, groupBy) }
 
   useEffect(() => {
     ;(window as { __slayzone_moveTaskForTest?: (taskId: string, newColumnId: string, targetIndex: number) => void }).__slayzone_moveTaskForTest = handleTaskMove

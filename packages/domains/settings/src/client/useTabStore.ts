@@ -5,8 +5,8 @@ import type { TaskStatus } from '@slayzone/task/shared'
 
 export type ActiveView = 'tabs' | 'leaderboard' | 'usage-analytics' | 'context'
 
-export type TreeGroupBy = 'status' | 'priority'
-export type TreeOrderBy = 'manual' | 'priority' | 'due_date' | 'title' | 'created'
+export type TreeGroupBy = 'none' | 'status' | 'priority'
+export type TreeOrderBy = 'manual' | 'priority' | 'due_date' | 'title' | 'created' | 'last_interaction'
 export type TreeOrderDir = 'asc' | 'desc'
 
 // Legacy — kept for one-time read in `_loadState` migrations. New code uses
@@ -408,12 +408,17 @@ export const useTabStore = create<TabState>()(
         treePinnedTaskIds: Array.isArray(state.treePinnedTaskIds) && state.treePinnedTaskIds.every((id) => typeof id === 'string')
           ? state.treePinnedTaskIds
           : [],
-        treeGroupBy: state.treeGroupBy === 'priority' ? 'priority' : 'status',
+        treeGroupBy:
+          state.treeGroupBy === 'priority' ||
+          state.treeGroupBy === 'none'
+            ? state.treeGroupBy
+            : 'status',
         treeOrderBy:
           state.treeOrderBy === 'priority' ||
           state.treeOrderBy === 'due_date' ||
           state.treeOrderBy === 'title' ||
-          state.treeOrderBy === 'created'
+          state.treeOrderBy === 'created' ||
+          state.treeOrderBy === 'last_interaction'
             ? state.treeOrderBy
             : 'manual',
         treeOrderDir: state.treeOrderDir === 'desc' ? 'desc' : 'asc',

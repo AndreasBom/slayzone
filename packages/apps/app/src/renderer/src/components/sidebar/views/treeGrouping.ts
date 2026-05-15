@@ -4,12 +4,15 @@ import type { TreeGroupBy, TreeOrderBy, TreeOrderDir } from '@slayzone/settings'
 
 export const TEMP_GROUP_KEY = '__temporary__'
 export const PINNED_GROUP_KEY = '__pinned__'
+export const NONE_GROUP_KEY = '__none__'
 
 export interface TreeGroup {
   /** groupValue — matches what `moveTask` expects (status id, or 'p1'..'p5'). */
   key: string
   isTemp: boolean
   isPinned: boolean
+  /** Ungrouped bucket — `groupBy === 'none'`. Suppresses header + add-button. */
+  isNone?: boolean
   tasks: Task[]
 }
 
@@ -38,6 +41,17 @@ export function orderTreeRows(tasks: Task[], orderBy: TreeOrderBy, dir: TreeOrde
         // newest first by default
         cmp = b.created_at.localeCompare(a.created_at)
         break
+      case 'last_interaction': {
+        // Newest interaction first. Null → bottom. Bumped by chat user-messages
+        // and agent_turns inserts; see migrations v139.
+        const av = a.last_interaction_at
+        const bv = b.last_interaction_at
+        if (av == null && bv == null) cmp = 0
+        else if (av == null) cmp = 1
+        else if (bv == null) cmp = -1
+        else cmp = bv - av
+        break
+      }
       case 'manual':
       default:
         cmp = 0
@@ -89,6 +103,15 @@ export function groupTreeRows(
   }
   if (tempTasks.length > 0) {
     groups.push({ key: TEMP_GROUP_KEY, isTemp: true, isPinned: false, tasks: tempTasks })
+  }
+
+  if (groupBy === 'none') {
+    // Single ungrouped bucket. Pinned/temp still split when their toggles on,
+    // so users can pull those to the top without forcing status/priority bins.
+    if (persistent.length > 0 || opts.showEmpty) {
+      groups.push({ key: NONE_GROUP_KEY, isTemp: false, isPinned: false, isNone: true, tasks: persistent })
+    }
+    return groups
   }
 
   if (groupBy === 'status') {

@@ -496,6 +496,9 @@ export interface Task {
   // True once user dismisses the dev-server URL toast for this task — toast never
   // reappears for the task again.
   dev_url_toast_dismissed: boolean
+  // Epoch ms of last user→agent or agent→user interaction. Bumped from
+  // chat-event user-messages and agent_turns inserts; null until first event.
+  last_interaction_at: number | null
   created_at: string
   updated_at: string
 }

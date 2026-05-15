@@ -63,6 +63,9 @@ function broadcastChange(worktreePath: string): void {
     for (const w of BrowserWindow.getAllWindows()) {
       if (w.isDestroyed()) continue
       w.webContents.send('agent-turns:changed', worktreePath)
+      // insertTurn bumps tasks.last_interaction_at — refresh so the tree-view
+      // "Last interaction" sort reorders without waiting for unrelated reloads.
+      w.webContents.send('tasks:changed')
     }
   } catch {
     // non-electron context (tests) — no-op

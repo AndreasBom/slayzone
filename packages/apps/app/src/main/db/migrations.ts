@@ -2622,6 +2622,34 @@ const migrations: Migration[] = [
           WHERE id = 'claude-chat' AND default_flags IS NULL;
       `)
     }
+  },
+  {
+    version: 139,
+    up: (db) => {
+      // Denormalized "last user-or-agent interaction" epoch-ms. Bumped from
+      // chat user-message events + agent_turns inserts. Sorted by tree-view's
+      // "last interaction" orderBy. Backfill takes MAX across both sources so
+      // chat-only tasks (no git snapshots) and snapshot-only tasks both light
+      // up at migration time. Filter chat_events to 'user-message' kind so
+      // backfill matches the runtime bump path. Sentinel `0` collapses to NULL.
+      db.exec(`
+        ALTER TABLE tasks ADD COLUMN last_interaction_at INTEGER;
+        UPDATE tasks SET last_interaction_at = (
+          SELECT MAX(IFNULL(at_max, 0), IFNULL(ce_max, 0))
+          FROM (
+            SELECT
+              (SELECT MAX(at.created_at) FROM agent_turns at WHERE at.task_id = tasks.id) AS at_max,
+              (SELECT CAST(strftime('%s', MAX(ce.created_at)) AS INTEGER) * 1000
+                 FROM chat_events ce
+                 JOIN terminal_tabs tt ON tt.id = ce.tab_id
+                WHERE tt.task_id = tasks.id
+                  AND json_extract(ce.event, '$.kind') = 'user-message') AS ce_max
+          )
+        );
+        UPDATE tasks SET last_interaction_at = NULL WHERE last_interaction_at = 0;
+        CREATE INDEX IF NOT EXISTS idx_tasks_last_interaction ON tasks(last_interaction_at DESC);
+      `)
+    }
   }
 ]
 

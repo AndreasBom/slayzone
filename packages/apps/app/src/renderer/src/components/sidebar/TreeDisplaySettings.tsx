@@ -90,6 +90,7 @@ export function TreeDisplaySettings() {
               value={treeGroupBy}
               onChange={(v) => setTreeGroupBy(v as TreeGroupBy)}
               options={[
+                { value: 'none', label: 'None' },
                 { value: 'status', label: 'Status' },
                 { value: 'priority', label: 'Priority' },
               ]}
@@ -106,6 +107,7 @@ export function TreeDisplaySettings() {
                 { value: 'due_date', label: 'Due date' },
                 { value: 'title', label: 'Title' },
                 { value: 'created', label: 'Created' },
+                { value: 'last_interaction', label: 'Last interaction' },
               ]}
             />
             <SelectRow
@@ -247,6 +249,9 @@ function FiltersSection({
   return (
     <div className="space-y-2">
       <SectionHeader>Filters</SectionHeader>
+      <p className="text-xs text-muted-foreground/80 leading-snug">
+        Limit by status. Pinned and open tasks always show.
+      </p>
       <div className="flex flex-wrap gap-1">
         {statusOptions.map((opt) => {
           const Icon = opt.icon
@@ -346,7 +351,7 @@ function SelectRow({
         <SelectTrigger
           id={id}
           size="sm"
-          className="!h-6 !min-h-0 w-[120px] px-2 py-0 text-xs shrink-0 gap-1"
+          className="!h-6 !min-h-0 w-[160px] px-2 py-0 text-xs shrink-0 gap-1"
         >
           <SelectValue />
         </SelectTrigger>

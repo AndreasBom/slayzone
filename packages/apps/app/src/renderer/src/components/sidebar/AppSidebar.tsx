@@ -37,7 +37,7 @@ interface AppSidebarProps {
   idleByProject?: Map<string, number>
   onReorderProjects: (projectIds: string[]) => void
   onTaskReorder?: (taskIds: string[]) => void
-  onTaskMove?: (taskId: string, newColumnId: string, targetIndex: number, groupBy: 'status' | 'priority') => void
+  onTaskMove?: (taskId: string, newColumnId: string, targetIndex: number, groupBy: 'none' | 'status' | 'priority') => void
   onTaskReparent?: (taskId: string, newParentId: string | null, newSiblingTaskIds: string[]) => void
   onTaskBulkReparent?: (taskIds: string[], newParentId: string | null, newSiblingTaskIds: string[]) => void
   onTaskFieldUpdate?: (taskId: string, updates: Partial<Task>) => void

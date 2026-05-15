@@ -22,7 +22,7 @@ import { cn, TerminalProgressDot, PriorityIcon, getColumnStatusStyle, Tooltip, T
 import { type Task } from '@slayzone/task/shared'
 import { useDialogStore, useTabStore } from '@slayzone/settings'
 import { PRIORITY_LABELS } from '@slayzone/tasks'
-import { groupTreeRows, orderTreeRows, PINNED_GROUP_KEY, type TreeGroup } from './treeGrouping'
+import { groupTreeRows, orderTreeRows, PINNED_GROUP_KEY, NONE_GROUP_KEY, type TreeGroup } from './treeGrouping'
 import { useActiveSessionTaskIds } from '@/components/agent-status/useIdleTasks'
 import { useStaleSkillCounts } from '@slayzone/ai-config/client'
 import { TreeDisplaySettings } from '../TreeDisplaySettings'
@@ -124,7 +124,7 @@ interface TaskBranchCtx {
   treeShowPriority: boolean
   treeShowWorktree: boolean
   treeCrossOutDone: boolean
-  treeGroupBy: 'status' | 'priority'
+  treeGroupBy: 'none' | 'status' | 'priority'
   treeGroupPinned: boolean
   onTaskClick?: (taskId: string) => void
   onRowSelectClick: (event: ReactMouseEvent<HTMLButtonElement>, taskId: string) => void
@@ -177,11 +177,12 @@ function RenameInput({
 
 function rowGroupValue(
   task: Task,
-  groupBy: 'status' | 'priority',
+  groupBy: 'none' | 'status' | 'priority',
   groupPinned: boolean,
   pinnedSet: Set<string>
 ): string {
   if (groupPinned && pinnedSet.has(task.id)) return PINNED_GROUP_KEY
+  if (groupBy === 'none') return NONE_GROUP_KEY
   if (groupBy === 'priority') return `p${typeof task.priority === 'number' ? task.priority : 5}`
   return task.status
 }
@@ -1091,6 +1092,7 @@ export function TreeView({
     label: string
   ): ReactNode => {
     if (group.isPinned) return null
+    if (group.isNone) return null
     if (group.isTemp && !onCreateTemporaryTask) return null
     return (
       <button
@@ -1121,6 +1123,10 @@ export function TreeView({
     branchCtx: TaskBranchCtx
   ): ReactNode => {
     const cols = columnsByProjectId?.get(projectId) ?? null
+    // When `none` is paired with pinned/temp, the leftover bucket still needs a
+    // header so the unanchored rows don't read as an orphan extension of the
+    // group above. Solo-`none` stays headerless (no companions to disambiguate).
+    const hasCompanions = groups.length > 1
     return groups.map((g) => {
       let label: string
       let Icon: typeof Clock | null = null
@@ -1133,6 +1139,8 @@ export function TreeView({
         label = 'Temporary'
         Icon = Clock
         iconClass = 'text-muted-foreground/60'
+      } else if (g.isNone) {
+        label = 'Other'
       } else if (treeGroupBy === 'priority') {
         const prio = parseInt(g.key.slice(1), 10)
         label = PRIORITY_LABELS[prio] ?? g.key
@@ -1143,13 +1151,16 @@ export function TreeView({
         iconClass = style?.iconClass
       }
 
+      const showHeader = !g.isNone || hasCompanions
       const groupBody = (
         <>
-          <div className="flex items-center gap-1.5 px-2 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
-            {Icon && <Icon className={cn('size-3', iconClass)} />}
-            <span>{label}</span>
-            {renderGroupAddButton(g, projectId, label)}
-          </div>
+          {showHeader && (
+            <div className="flex items-center gap-1.5 px-2 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+              {Icon && <Icon className={cn('size-3', iconClass)} />}
+              <span>{label}</span>
+              {renderGroupAddButton(g, projectId, label)}
+            </div>
+          )}
           {g.tasks.map((task, i) => (
             <TaskBranch
               key={task.id}
@@ -1161,8 +1172,8 @@ export function TreeView({
           ))}
         </>
       )
-      // Temp/pinned groups have no valid drop semantic, so skip droppable wrapper.
-      if (g.isTemp || g.isPinned) return <div key={g.key}>{groupBody}</div>
+      // Temp/pinned/none groups have no valid drop semantic, so skip droppable wrapper.
+      if (g.isTemp || g.isPinned || g.isNone) return <div key={g.key}>{groupBody}</div>
       return (
         <StatusGroupDroppable key={g.key} projectId={projectId} groupValue={g.key}>
           {groupBody}

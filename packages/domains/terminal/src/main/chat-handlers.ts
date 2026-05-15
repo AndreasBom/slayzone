@@ -429,6 +429,34 @@ export function registerChatHandlers(ipcMain: IpcMain, db: Database, opts: ChatH
       } catch (err) {
         console.error('[chat-handlers] persistChatEvent failed:', err)
       }
+      // Tree-view "Last interaction" sort marker — only fire on user-message
+      // (clear "I interacted" signal). Agent-side bumps come via agent_turns.
+      if (event.kind === 'user-message') {
+        const info = getSessionInfo(tabId)
+        if (info) {
+          try {
+            const now = Date.now()
+            const res = db.prepare(
+              `UPDATE tasks SET last_interaction_at = ? WHERE id = ? AND (last_interaction_at IS NULL OR last_interaction_at < ?)`
+            ).run(now, info.taskId, now)
+            // Notify renderer so the tree-view sort reorders without waiting
+            // for an unrelated tasks reload. Skip when UPDATE was a no-op.
+            if (res.changes > 0) {
+              try {
+                // eslint-disable-next-line @typescript-eslint/no-require-imports
+                const { BrowserWindow } = require('electron') as typeof import('electron')
+                for (const w of BrowserWindow.getAllWindows()) {
+                  if (!w.isDestroyed()) w.webContents.send('tasks:changed')
+                }
+              } catch {
+                // non-electron (tests) — no-op
+              }
+            }
+          } catch (err) {
+            console.error('[chat-handlers] bump last_interaction_at failed:', err)
+          }
+        }
+      }
       // Subprocess is the source of truth for permission mode. Cache it back
       // into provider_config whenever turn-init carries a recognized mode so
       // cold-start spawn flags match the last observed live value.
