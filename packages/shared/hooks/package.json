@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./notify.sh": "./src/notify.sh"
+    "./notify.sh": "./src/notify.sh",
+    "./codex-wrapper.sh": "./src/codex-wrapper.sh"
   }
 }

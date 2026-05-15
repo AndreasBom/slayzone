@@ -15,7 +15,7 @@ export type AgentId = 'claude-code' | 'codex' | 'gemini' | 'opencode'
  * Used at PTY/chat spawn time to gate `SLAYZONE_AGENT_HOOK_URL` injection.
  * Add an agent here once both its hook script + installer have shipped.
  */
-export const HOOK_SUPPORTED_AGENT_IDS: ReadonlySet<AgentId> = new Set<AgentId>(['claude-code'])
+export const HOOK_SUPPORTED_AGENT_IDS: ReadonlySet<AgentId> = new Set<AgentId>(['claude-code', 'codex'])
 
 export type AgentLifecycleEventType =
   | 'agent-start'
@@ -51,6 +51,15 @@ const ALIAS_TABLE: Record<string, AgentLifecycleEventType> = {
   precompact: 'agent-stop',
 
   // Codex / generic aliases (forward-looking; mirrors Superset coverage).
+  // Bare Start/Stop come from the codex wrapper's synthetic
+  // {"hook_event_name":"Start"} payloads (see codex-wrapper.sh).
+  // `permissionrequest` already mapped above under Claude block; `stop` reused.
+  start: 'agent-start',
+  task_started: 'agent-start',
+  task_complete: 'agent-stop',
+  exec_approval_request: 'permission-request',
+  apply_patch_approval_request: 'permission-request',
+  request_user_input: 'permission-request',
   onstart: 'agent-start',
   onstop: 'agent-stop',
   onsessionstart: 'session-start',

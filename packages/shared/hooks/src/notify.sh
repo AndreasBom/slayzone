@@ -2,7 +2,7 @@
 # SlayZone agent lifecycle hook.
 #
 # Installed by the app at ~/.slayzone/hooks/notify.sh (mode 0755).
-# Invoked by the host agent (e.g. Claude Code) via its hooks config.
+# Invoked by the host agent (e.g. Claude Code, Codex) via its hooks config.
 # Forwards the upstream hook event to the SlayZone app over loopback.
 #
 # Required env (injected at PTY/chat spawn by buildMcpEnv):
@@ -12,8 +12,10 @@
 #   SLAYZONE_TASK_ID         - active task id
 #   SLAYZONE_PROJECT_ID      - active project id
 #
-# stdin: agent-supplied JSON describing the hook event. Forwarded raw to the app
-#        (server-side is the single source of truth for parsing).
+# Input shapes:
+#   Claude/Mastra/Droid:  JSON via stdin    + hook event in env (CLAUDE_HOOK_EVENT)
+#   Codex (native notify): JSON via argv $1 + event under "type" field
+#   Codex wrapper synthetic: JSON via argv $1 + event under "hook_event_name"
 #
 # Contract: ALWAYS exit 0. Hook failures must NOT bubble into the agent TUI
 # (Claude renders red error walls otherwise). Silent on any failure.
@@ -24,15 +26,27 @@ set -e
 [ -z "$SLAYZONE_AGENT_HOOK_URL" ] && exit 0
 [ -z "$SLAYZONE_AGENT_ID" ] && exit 0
 
-PAYLOAD=$(cat 2>/dev/null || true)
+# Codex passes JSON as argv $1; Claude pipes via stdin.
+if [ -n "$1" ]; then
+  PAYLOAD="$1"
+else
+  PAYLOAD=$(cat 2>/dev/null || true)
+fi
 [ -z "$PAYLOAD" ] && PAYLOAD='{}'
+
+# Resolve hook event name (priority: explicit env → payload hook_event_name → payload type).
+HOOK_EVENT="${CLAUDE_HOOK_EVENT:-${HOOK_EVENT_NAME:-${AGENT_HOOK_EVENT:-}}}"
+if [ -z "$HOOK_EVENT" ]; then
+  HOOK_EVENT=$(printf '%s' "$PAYLOAD" | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"' || true)
+fi
+if [ -z "$HOOK_EVENT" ]; then
+  HOOK_EVENT=$(printf '%s' "$PAYLOAD" | grep -oE '"type"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"' || true)
+fi
+[ -z "$HOOK_EVENT" ] && HOOK_EVENT="Unknown"
 
 # Wrap stdin in an envelope with the contextual env vars. Server merges.
 TASK_FIELD=""
 [ -n "$SLAYZONE_TASK_ID" ] && TASK_FIELD=",\"taskId\":\"$SLAYZONE_TASK_ID\""
-
-# Detect hook event name from common env vars. Falls back to "Unknown".
-HOOK_EVENT="${CLAUDE_HOOK_EVENT:-${HOOK_EVENT_NAME:-${AGENT_HOOK_EVENT:-Unknown}}}"
 
 CWD_FIELD=""
 [ -n "$PWD" ] && CWD_FIELD=",\"cwd\":\"$PWD\""

@@ -62,6 +62,14 @@ const cases: Array<[string, ReturnType<typeof mapEventType>]> = [
   ['agent-turn-complete', 'agent-stop'],
   ['agent-turn-end', 'agent-stop'],
 
+  // Codex wrapper synthetic + codex native completion types.
+  ['Start', 'agent-start'],
+  ['task_started', 'agent-start'],
+  ['task_complete', 'agent-stop'],
+  ['exec_approval_request', 'permission-request'],
+  ['apply_patch_approval_request', 'permission-request'],
+  ['request_user_input', 'permission-request'],
+
   // Permission aliases.
   ['permission-request', 'permission-request'],
   ['PermissionRequest', 'permission-request'],
@@ -87,8 +95,8 @@ test('HOOK_SUPPORTED_AGENT_IDS contains claude-code', () => {
   expect(HOOK_SUPPORTED_AGENT_IDS.has('claude-code')).toBe(true)
 })
 
-test('HOOK_SUPPORTED_AGENT_IDS excludes codex (not yet shipped)', () => {
-  expect(HOOK_SUPPORTED_AGENT_IDS.has('codex')).toBe(false)
+test('HOOK_SUPPORTED_AGENT_IDS contains codex', () => {
+  expect(HOOK_SUPPORTED_AGENT_IDS.has('codex')).toBe(true)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
