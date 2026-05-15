@@ -13,6 +13,7 @@ import { WebLinkProvider, FileLinkProvider } from './web-link-provider'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 
 // Strip trailing whitespace from each line of selection text.
@@ -463,6 +464,11 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
       terminal.loadAddon(fitAddon)
       terminal.loadAddon(serializeAddon)
       terminal.loadAddon(searchAddon)
+
+      // xterm defaults to Unicode v6 widths — modern glyphs in TUIs (Claude Code
+      // box-draw, emoji, combining marks) desync cursor → overlapping redraws.
+      terminal.loadAddon(new UnicodeGraphemesAddon())
+      terminal.unicode.activeVersion = '15-graphemes'
 
       // Clickable URLs — pointer cursor on hover, no underline decoration.
       // Underline disabled to avoid persistent-underline bugs with WebGL LinkRenderLayer.
