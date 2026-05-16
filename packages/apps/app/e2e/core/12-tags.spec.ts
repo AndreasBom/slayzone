@@ -35,18 +35,22 @@ test.describe('Tag management', () => {
     await openTagsSection(mainWindow)
 
     await projectSettingsDialog(mainWindow).getByRole('button', { name: 'New tag' }).click()
-    const createDialog = mainWindow.getByRole('dialog').filter({ hasText: 'New Tag' }).last()
+    const createDialog = mainWindow.locator('[role="dialog"]:visible').filter({ hasText: 'New Tag' }).last()
     await createDialog.locator('#tag-name').fill(tagA)
     await createDialog.getByRole('button', { name: 'Create' }).click()
 
     // Verify tag appears in list
     await expect(projectSettingsDialog(mainWindow).getByText(tagA)).toBeVisible({ timeout: 3_000 })
+
+    // Close project settings so the next test starts from a clean state.
+    await mainWindow.keyboard.press('Escape')
+    await expect(projectSettingsDialog(mainWindow)).not.toBeVisible({ timeout: 3_000 })
   })
 
   test('create second tag', async ({ mainWindow }) => {
     await openTagsSection(mainWindow)
     await projectSettingsDialog(mainWindow).getByRole('button', { name: 'New tag' }).click()
-    const createDialog = mainWindow.getByRole('dialog').filter({ hasText: 'New Tag' }).last()
+    const createDialog = mainWindow.locator('[role="dialog"]:visible').filter({ hasText: 'New Tag' }).last()
     await createDialog.locator('#tag-name').fill(tagB)
     await createDialog.getByRole('button', { name: 'Create' }).click()
     await expect(projectSettingsDialog(mainWindow).getByText(tagB)).toBeVisible({ timeout: 3_000 })

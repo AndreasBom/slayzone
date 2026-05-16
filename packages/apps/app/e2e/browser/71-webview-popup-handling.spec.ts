@@ -207,7 +207,8 @@ const openWebPanel = async (
   await expect(
     mainWindow.locator('span').filter({ hasText: panelName }).last()
   ).toBeVisible({ timeout: 5_000 })
-  await expect.poll(() => getWebPanelUrl(mainWindow), { timeout: 5_000 }).toBe('about:blank')
+  // Initial WebContentsView URL may be empty before first navigation completes.
+  await expect.poll(() => getWebPanelUrl(mainWindow), { timeout: 5_000 }).toMatch(/^(about:blank|)$/)
 }
 
 // ===========================================================================
@@ -458,7 +459,7 @@ test.describe.serial('Webview popup handling — Browser panel', () => {
 test.describe.serial('Webview popup handling — Web panel with handoff policy', () => {
   const PANEL_ID = 'web:popup-handoff'
   const PANEL_NAME = 'Popup Handoff'
-  const PANEL_SHORTCUT = 'j'
+  const PANEL_SHORTCUT = 'y'
   let baselineWindowIds: number[]
 
   test.beforeAll(async ({ electronApp, mainWindow }) => {
@@ -619,7 +620,7 @@ test.describe.serial('Webview popup handling — Web panel with handoff policy',
 test.describe.serial('Webview popup handling — Web panel without handoff policy', () => {
   const PANEL_ID = 'web:popup-nohandoff'
   const PANEL_NAME = 'NoHandoff Panel'
-  const PANEL_SHORTCUT = 'j'
+  const PANEL_SHORTCUT = 'y'
   let baselineWindowIds: number[]
 
   test.beforeAll(async ({ electronApp, mainWindow }) => {
