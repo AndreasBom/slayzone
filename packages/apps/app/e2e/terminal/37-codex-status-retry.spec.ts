@@ -97,11 +97,13 @@ test.describe('Session banner behavior', () => {
   })
 
   test.afterAll(async ({ electronApp }) => {
-    await electronApp.evaluate(() => {
-      try {
-        const restore = (globalThis as unknown as { __restorePtyHandlers?: () => void }).__restorePtyHandlers
-        restore?.()
-      } catch { /* already restored */ }
+    // Same strip set as 28-codex-session-detection.
+    await electronApp.evaluate(({ ipcMain }) => {
+      for (const ch of ['pty:submit', 'chat:list', 'session:list', 'session:getState']) {
+        ipcMain.removeHandler(ch)
+      }
+      const restore = (globalThis as unknown as { __restorePtyHandlers?: () => void }).__restorePtyHandlers
+      restore?.()
     })
   })
 

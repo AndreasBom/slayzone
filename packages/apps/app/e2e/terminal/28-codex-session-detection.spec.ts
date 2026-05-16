@@ -90,14 +90,17 @@ test.describe('Session ID banners', () => {
   })
 
   test.afterAll(async ({ electronApp }) => {
-    // restorePtyHandlers re-registers the original handlers, which throws if
-    // another describe has already restored them. Swallow the duplicate-
-    // handler error so afterAll doesn't fail the suite.
-    await electronApp.evaluate(() => {
-      try {
-        const restore = (globalThis as unknown as { __restorePtyHandlers?: () => void }).__restorePtyHandlers
-        restore?.()
-      } catch { /* already restored */ }
+    // __restorePtyHandlers's remove-list is missing several channels that
+    // registerPtyHandlers also binds (pty:submit, chat:list, session:list,
+    // session:getState). Without these strips, re-registration trips the
+    // patched-handle duplicate check and leaves pty:exists etc. half-torn-
+    // down for the next describe.
+    await electronApp.evaluate(({ ipcMain }) => {
+      for (const ch of ['pty:submit', 'chat:list', 'session:list', 'session:getState']) {
+        ipcMain.removeHandler(ch)
+      }
+      const restore = (globalThis as unknown as { __restorePtyHandlers?: () => void }).__restorePtyHandlers
+      restore?.()
     })
   })
 
