@@ -9,10 +9,9 @@ import {
   readFullBuffer,
 } from '../fixtures/terminal'
 
-// QUARANTINED 2026-05-16: switchTerminalMode('opencode') fails — opencode
-// item not found in the provider menu even after setting task.terminal_mode.
-// Likely ContextMenu chevron-click pipeline race or opencode disabled in
-// fresh seed. Re-investigate after stabilizing menu fixture.
+// QUARANTINED 2026-05-16: opencode PTY autospawn doesn't register a session
+// in this env, same pattern as 27-codex-resume. Binary is on PATH but the
+// session-exists check never flips true. Needs main-process PTY spawn trace.
 test.describe.skip('OpenCode CLI integration', () => {
   let taskId: string
 
@@ -22,9 +21,8 @@ test.describe.skip('OpenCode CLI integration', () => {
     const p = await s.createProject({ name: 'OpenCli', color: '#7c3aed', path: TEST_PROJECT_PATH })
     const t = await s.createTask({ projectId: p.id, title: 'Opencode cli test', status: 'in_progress' })
     taskId = t.id
-    // Pre-set the task's terminal_mode to 'opencode' so the mode is the
-    // "current mode" and getVisibleModes keeps it visible regardless of the
-    // enabled flag in this fresh DB.
+    // Set task.terminal_mode='opencode' via DB instead of UI — ContextMenu
+    // switcher is flaky in Playwright for non-'terminal' modes (see 22).
     await mainWindow.evaluate(
       (id) => window.api.db.updateTask({ id, terminalMode: 'opencode' }),
       taskId
@@ -32,7 +30,6 @@ test.describe.skip('OpenCode CLI integration', () => {
     await s.refreshData()
 
     await openTaskTerminal(mainWindow, { projectAbbrev: 'OP', taskTitle: 'Opencode cli test' })
-    await switchTerminalMode(mainWindow, 'opencode')
   })
 
   test('starts and produces TUI output', async ({ mainWindow }) => {
