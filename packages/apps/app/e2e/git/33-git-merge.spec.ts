@@ -353,8 +353,10 @@ test.describe('Git init', () => {
     await mainWindow.getByText('Init task').first().click()
     await expect(mainWindow.locator('[data-testid="terminal-mode-trigger"]:visible').first()).toBeVisible({ timeout: 5_000 })
 
-    // Toggle git panel on (general tab — shows git init controls)
-    await mainWindow.keyboard.press('Meta+g')
+    // Toggle git panel on (general tab — shows git init controls). Use the
+    // retry helper since full-suite pollution can leave focus on the prior
+    // tab's panel.
+    await ensureGitPanelVisible(mainWindow)
     await expect(mainWindow.getByText('Not a git repository')).toBeVisible({ timeout: 5_000 })
   })
 
