@@ -50,13 +50,14 @@ function initGitDir() {
 }
 
 async function ensureGitPanelVisible(page: import('@playwright/test').Page) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (await page.getByTestId('task-git-panel').last().isVisible({ timeout: 500 }).catch(() => false)) return
+  const target = page.locator('[data-testid="task-git-panel"]:visible').last()
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (await target.isVisible({ timeout: 500 }).catch(() => false)) return
     await page.keyboard.press('Escape').catch(() => {})
     await page.locator('#root').click({ position: { x: 16, y: 16 } }).catch(() => {})
     await page.keyboard.press('Meta+g')
   }
-  await expect(page.getByTestId('task-git-panel').last()).toBeVisible({ timeout: 5_000 })
+  await expect(target).toBeVisible({ timeout: 5_000 })
 }
 
 /** Create test-branch with a unique file commit, checkout main, create worktree */
