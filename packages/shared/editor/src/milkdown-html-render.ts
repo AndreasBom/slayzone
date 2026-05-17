@@ -113,8 +113,6 @@ const BLOCK_PARENTS = new Set([
   'blockquote',
   'listItem',
   'footnoteDefinition',
-  'tableRow',
-  'tableCell',
 ])
 
 const splitHtmlNodes: UnifiedPlugin<[], Root> = () => (tree) => {
