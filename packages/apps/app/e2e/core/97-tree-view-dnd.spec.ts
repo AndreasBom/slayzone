@@ -43,40 +43,80 @@ function statusGroup(page: Page, projectId: string, status: string) {
   return page.locator(`[data-testid="tree-status-group"][data-project-id="${projectId}"][data-status="${status}"]`)
 }
 
+type Point = { x: number; y: number }
+type DstArg = Point | (() => Promise<Point>)
+
 async function dragFromTo(
   page: Page,
-  src: { x: number; y: number },
-  dst: { x: number; y: number }
+  src: Point,
+  dst: DstArg
 ) {
   await page.mouse.move(src.x, src.y)
   await page.mouse.down()
-  // Exceed PointerSensor activation distance (5px).
+  // Exceed PointerSensor activation distance (5px). dnd-kit fires
+  // `onDragStart` here, which triggers `setActiveDragTaskId` and the
+  // transient `dragCollapseSet` for parents with subtasks. That reflows the
+  // layout below the dragged row — so a `dst` captured pre-activation is
+  // stale. Pass a resolver callback for `dst` to re-read the target row's
+  // bbox after this point.
   await page.mouse.move(src.x + 12, src.y, { steps: 5 })
-  await page.mouse.move(dst.x, dst.y, { steps: 20 })
+  const dstPt = typeof dst === 'function' ? await dst() : dst
+  await page.mouse.move(dstPt.x, dstPt.y, { steps: 20 })
   await page.mouse.up()
 }
 
 /** Start a drag and hover at dst without releasing — so we can sample
  * pre-slide transforms while the drag is still live. Caller MUST release
- * via `page.mouse.up()` afterwards. */
+ * via `page.mouse.up()` afterwards.
+ *
+ * Pauses ~250ms after the move so the CSS slide transition on non-active
+ * rows can settle — `useSortable` returns a default ~200ms transition,
+ * applied to siblings via `style.transition`, so a row's `transform`
+ * computed style ramps from 0 to its final shift over that window. Sampling
+ * mid-transition yields a partial value (~-18 instead of -32). */
 async function dragHover(
   page: Page,
-  src: { x: number; y: number },
-  dst: { x: number; y: number }
+  src: Point,
+  dst: DstArg
 ) {
   await page.mouse.move(src.x, src.y)
   await page.mouse.down()
   await page.mouse.move(src.x + 12, src.y, { steps: 5 })
-  await page.mouse.move(dst.x, dst.y, { steps: 20 })
+  const dstPt = typeof dst === 'function' ? await dst() : dst
+  await page.mouse.move(dstPt.x, dstPt.y, { steps: 20 })
+  await page.waitForTimeout(300)
 }
 
-/** Snapshot every visible task row's transform + rect mid-drag. */
+/** Resolve a row's drop-point AFTER drag activation. `yFrac` defaults to
+ * 0.5 (center). `yOffset` adds pixels past the row's bottom (positive) or
+ * before the top (negative) — use for "land in inter-group gap" cases. */
+function rowDropPoint(
+  page: Page,
+  id: string,
+  opts: { yFrac?: number; yOffset?: number } = {}
+): () => Promise<Point> {
+  return async () => {
+    const box = await taskRow(page, id).boundingBox()
+    if (!box) throw new Error(`row bbox not found: ${id}`)
+    const yFrac = opts.yFrac ?? 0.5
+    const yOffset = opts.yOffset ?? 0
+    return { x: box.x + box.width / 2, y: box.y + box.height * yFrac + yOffset }
+  }
+}
+
+/** Snapshot every visible task row + group header transform + rect
+ * mid-drag. Tasks keyed by `data-task-id`, headers keyed by
+ * `header:<groupKey>` (matches the sortable id format). */
 async function sampleRowTransforms(page: Page) {
   return page.evaluate(() => {
     const out: { id: string; transformY: number; topY: number }[] = []
-    const rows = document.querySelectorAll('[data-sidebar-tree-item="task"]')
-    for (const r of Array.from(rows) as HTMLElement[]) {
-      if (!r.dataset.taskId) continue
+    const els = document.querySelectorAll('[data-sidebar-tree-item]')
+    for (const r of Array.from(els) as HTMLElement[]) {
+      const kind = r.dataset.sidebarTreeItem
+      let id: string | null = null
+      if (kind === 'task') id = r.dataset.taskId ?? null
+      else if (kind === 'header') id = r.dataset.groupKey ? `header:${r.dataset.groupKey}` : null
+      if (!id) continue
       const t = getComputedStyle(r).transform
       let ty = 0
       if (t && t !== 'none') {
@@ -92,7 +132,7 @@ async function sampleRowTransforms(page: Page) {
           }
         }
       }
-      out.push({ id: r.dataset.taskId, transformY: ty, topY: r.getBoundingClientRect().top })
+      out.push({ id, transformY: ty, topY: r.getBoundingClientRect().top })
     }
     return out
   })
@@ -214,14 +254,15 @@ test.describe('TreeView drag and drop', () => {
 
   test('drag root past sibling reorders within in_progress group', async ({ mainWindow }) => {
     const srcBox = await taskRow(mainWindow, rootA).boundingBox()
-    const dstBox = await taskRow(mainWindow, rootC).boundingBox()
-    if (!srcBox || !dstBox) throw new Error('row bounding boxes unavailable')
+    if (!srcBox) throw new Error('row bounding boxes unavailable')
 
     await dragFromTo(
       mainWindow,
       { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
-      // Drop on bottom half of last row so dnd-kit places after it.
-      { x: dstBox.x + dstBox.width / 2, y: dstBox.y + dstBox.height - 4 }
+      // Drop on bottom half of last row so dnd-kit places after it. Resolve
+      // dstBox post-activation — `dragCollapseSet` collapses rootA's
+      // subtasks at drag start and reflows rootC's y.
+      rowDropPoint(mainWindow, rootC, { yOffset: -4, yFrac: 1 })
     )
 
     // Expect DB order: B, C, A (A dragged past C).
@@ -240,13 +281,12 @@ test.describe('TreeView drag and drop', () => {
     // DnD reorder should persist via the `order` column.
 
     const srcBox = await taskRow(mainWindow, rootA).boundingBox()
-    const dstBox = await taskRow(mainWindow, rootC).boundingBox()
-    if (!srcBox || !dstBox) throw new Error('row bounding boxes unavailable')
+    if (!srcBox) throw new Error('row bounding boxes unavailable')
 
     await dragFromTo(
       mainWindow,
       { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
-      { x: dstBox.x + dstBox.width / 2, y: dstBox.y + dstBox.height - 4 }
+      rowDropPoint(mainWindow, rootC, { yOffset: -4, yFrac: 1 })
     )
 
     await expect.poll(async () => {
@@ -332,13 +372,12 @@ test.describe('TreeView drag and drop', () => {
     await seed(mainWindow).refreshData()
 
     const srcBox = await taskRow(mainWindow, rootA).boundingBox()
-    const dstBox = await taskRow(mainWindow, rootC).boundingBox()
-    if (!srcBox || !dstBox) throw new Error('row bounding boxes unavailable')
+    if (!srcBox) throw new Error('row bounding boxes unavailable')
 
     await dragFromTo(
       mainWindow,
       { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
-      { x: dstBox.x + dstBox.width / 2, y: dstBox.y + dstBox.height - 4 }
+      rowDropPoint(mainWindow, rootC, { yOffset: -4, yFrac: 1 })
     )
 
     await expect.poll(async () => {
@@ -356,13 +395,12 @@ test.describe('TreeView drag and drop', () => {
     await seed(mainWindow).refreshData()
 
     const srcBox = await taskRow(mainWindow, rootA).boundingBox()
-    const dstBox = await taskRow(mainWindow, rootC).boundingBox()
-    if (!srcBox || !dstBox) throw new Error('row bounding boxes unavailable')
+    if (!srcBox) throw new Error('row bounding boxes unavailable')
 
     await dragFromTo(
       mainWindow,
       { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
-      { x: dstBox.x + dstBox.width / 2, y: dstBox.y + dstBox.height - 4 }
+      rowDropPoint(mainWindow, rootC, { yOffset: -4, yFrac: 1 })
     )
 
     await expect.poll(async () => {
@@ -433,13 +471,12 @@ test.describe('TreeView drag and drop', () => {
 
   test('drop position: drag DOWN onto row places source AFTER target', async ({ mainWindow }) => {
     const srcBox = await taskRow(mainWindow, rootA).boundingBox()
-    const dstBox = await taskRow(mainWindow, rootB).boundingBox()
-    if (!srcBox || !dstBox) throw new Error('row bounding boxes unavailable')
+    if (!srcBox) throw new Error('row bounding boxes unavailable')
     // Drag A (idx 0) onto B (idx 1) — `arrayMove(0, 1)` puts A at idx 1.
     await dragFromTo(
       mainWindow,
       { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
-      { x: dstBox.x + dstBox.width / 2, y: dstBox.y + dstBox.height / 2 }
+      rowDropPoint(mainWindow, rootB)
     )
     await expect.poll(async () => {
       const a = await getTaskById(mainWindow, rootA)
@@ -510,6 +547,38 @@ test.describe('TreeView drag and drop', () => {
     }, { timeout: 5_000 }).toEqual({ aStatus: 'todo', aOrder: 0, todoOrder: 1 })
   })
 
+  test('drag from lower group to last spot in upper group lands at end of upper group', async ({ mainWindow }) => {
+    // Test project has no custom columns → groups order by task-insertion:
+    // in_progress (created first) ABOVE todo. Drag rootTodo (lower group)
+    // up to just below rootC (last row of upper group, in_progress).
+    // Pointer lands in the gap between the two groups. Must place
+    // rootTodo at end of in_progress, NOT at top of todo (its own group).
+    const srcBox = await taskRow(mainWindow, rootTodo).boundingBox()
+    if (!srcBox) throw new Error('row bounding box unavailable')
+
+    await dragFromTo(
+      mainWindow,
+      { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
+      // 2px below rootC's bottom edge — inside the inter-group gap.
+      rowDropPoint(mainWindow, rootC, { yFrac: 1, yOffset: 2 })
+    )
+
+    await expect.poll(async () => {
+      const t = await getTaskById(mainWindow, rootTodo)
+      const c = await getTaskById(mainWindow, rootC)
+      if (!t || !c) return null
+      // Key invariants: rootTodo is now an in_progress task, placed AFTER
+      // rootC (= visually at end of the upper group). The exact order
+      // integer for rootC depends on the status-filtered list order
+      // moveTask sees (subtasks counted), but rootC must stay before
+      // rootTodo.
+      return {
+        tStatus: t.status,
+        afterRootC: t.order > c.order,
+      }
+    }, { timeout: 5_000 }).toEqual({ tStatus: 'in_progress', afterRootC: true })
+  })
+
   test('drop on row in different group: source lands at that row\'s slot in target group', async ({ mainWindow }) => {
     // Drag rootA (in_progress) onto rootTodo (only row in 'todo') —
     // expect rootA at order=0 of todo, rootTodo at order=1.
@@ -541,12 +610,11 @@ test.describe('TreeView drag and drop', () => {
     // Drag A (idx 0) onto C (idx 2). Stock arrayMove(0, 2) → items B and C
     // each shift UP by one row height.
     const srcBox = await taskRow(mainWindow, rootA).boundingBox()
-    const dstBox = await taskRow(mainWindow, rootC).boundingBox()
-    if (!srcBox || !dstBox) throw new Error('row bounding boxes unavailable')
+    if (!srcBox) throw new Error('row bounding boxes unavailable')
     await dragHover(
       mainWindow,
       { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
-      { x: dstBox.x + dstBox.width / 2, y: dstBox.y + dstBox.height / 2 }
+      rowDropPoint(mainWindow, rootC)
     )
     const samples = await sampleRowTransforms(mainWindow)
     const byId = new Map(samples.map((s) => [s.id, s]))
@@ -558,64 +626,57 @@ test.describe('TreeView drag and drop', () => {
     await mainWindow.mouse.up()
   })
 
-  test('pre-slide: cross-group DOWNWARD drag does not drift target rows into source group', async ({ mainWindow }) => {
-    // Drag rootA (in_progress, idx 0) DOWN onto rootTodo (todo group).
-    // Critical regression test: rootTodo's POST-shift top should remain
-    // visually below in_progress group's content area — it must NOT slide
-    // up into the source group's territory.
-    const todoBoxPre = await taskRow(mainWindow, rootTodo).boundingBox()
-    const inProgressGroupBoxPre = await statusGroup(mainWindow, projectId, 'in_progress').boundingBox()
-    if (!todoBoxPre || !inProgressGroupBoxPre) throw new Error('boxes missing')
-    const inProgressBottomPre = inProgressGroupBoxPre.y + inProgressGroupBoxPre.height
-
-    const srcBox = await taskRow(mainWindow, rootA).boundingBox()
-    const dstBox = todoBoxPre
+  test('pre-slide: cross-group drag does not drift target row into source group', async ({ mainWindow }) => {
+    // Drag rootC (in_progress, no subtasks) DOWN onto rootTodo. Test
+    // project has no custom columns, so in_progress renders ABOVE todo
+    // (task-insertion order). `verticalListSortingStrategy` shifts items
+    // between (active, over] by -activeRect.height - itemGap (the inter-
+    // item space, which now includes the static todo header height since
+    // the header is not a sortable). rootTodo's CSS transform should be
+    // a bounded single-row + header-gap shift up — never a multi-row
+    // drift past the gap. `transformY` (raw CSS transform) avoids auto-
+    // scroll noise.
+    const srcBox = await taskRow(mainWindow, rootC).boundingBox()
     if (!srcBox) throw new Error('source box missing')
     await dragHover(
       mainWindow,
       { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
-      { x: dstBox.x + dstBox.width / 2, y: dstBox.y + dstBox.height / 2 }
+      rowDropPoint(mainWindow, rootTodo)
     )
     const samples = await sampleRowTransforms(mainWindow)
     const todoSample = samples.find((s) => s.id === rootTodo)
     if (!todoSample) throw new Error('rootTodo not sampled')
-    // rootTodo may shift up (stock arrayMove behavior between active and
-    // over), but it must stay paired with its `todo` header — assert its
-    // top is still at or below the original in_progress group's content
-    // bottom (i.e., never crosses into in_progress's visual territory).
-    // Allow a small tolerance for row + header height arithmetic.
-    expect(todoSample.topY).toBeGreaterThanOrEqual(inProgressBottomPre - 64)
+    expect(todoSample.transformY).toBeLessThan(0)
+    // Active row height (32) + todo header (~31 = pt-4 + text + pb-1) + slack.
+    expect(todoSample.transformY).toBeGreaterThanOrEqual(-80)
     await mainWindow.mouse.up()
   })
 
-  test('pre-slide: group header rides with its content during cross-group drag', async ({ mainWindow }) => {
-    // Drag rootA downward toward rootTodo. The `todo` group header must
-    // shift by the same y-delta as rootTodo so the section stays cohesive
-    // (header doesn't "stick" while content moves, and vice versa). This
-    // is the regression check for the "header doesn't slide" complaint.
+  test('pre-slide: group header stays anchored while content slides beneath it', async ({ mainWindow }) => {
+    // Drag rootC (in_progress, no subtasks — so `dragCollapseSet` does
+    // not collapse anything and the layout above the todo header stays
+    // stable) downward toward rootTodo. The `todo` group header is a
+    // plain (non-sortable) label — it must STAY at its original y while
+    // rootTodo slides up underneath it. Inverse of treating headers as
+    // sortable rows.
     const todoHeader = mainWindow
       .locator(`[data-testid="tree-status-group"][data-status="todo"]`)
       .locator('text=Todo')
       .first()
     const headerPreBox = await todoHeader.boundingBox()
-    const todoPreBox = await taskRow(mainWindow, rootTodo).boundingBox()
-    if (!headerPreBox || !todoPreBox) throw new Error('boxes missing')
-    const preDelta = todoPreBox.y - headerPreBox.y
+    if (!headerPreBox) throw new Error('header box missing')
 
-    const srcBox = await taskRow(mainWindow, rootA).boundingBox()
-    const dstBox = todoPreBox
+    const srcBox = await taskRow(mainWindow, rootC).boundingBox()
     if (!srcBox) throw new Error('source box missing')
     await dragHover(
       mainWindow,
       { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
-      { x: dstBox.x + dstBox.width / 2, y: dstBox.y + dstBox.height / 2 }
+      rowDropPoint(mainWindow, rootTodo)
     )
     const headerPostBox = await todoHeader.boundingBox()
-    const todoPostBox = await taskRow(mainWindow, rootTodo).boundingBox()
-    if (!headerPostBox || !todoPostBox) throw new Error('post-drag boxes missing')
-    const postDelta = todoPostBox.y - headerPostBox.y
-    // Header + content delta should be preserved (±1px floating point).
-    expect(Math.abs(postDelta - preDelta)).toBeLessThanOrEqual(1)
+    if (!headerPostBox) throw new Error('post-drag header box missing')
+    // Header y must NOT change — it's a static label.
+    expect(Math.abs(headerPostBox.y - headerPreBox.y)).toBeLessThanOrEqual(1)
     await mainWindow.mouse.up()
   })
 
@@ -642,6 +703,28 @@ test.describe('TreeView drag and drop', () => {
     expect(byId.get(subA3)?.transformY ?? 0).toBe(0)
     // C is between activeIdx (B) and over (C) — should shift up.
     expect(byId.get(rootC)?.transformY).toBeLessThanOrEqual(-30)
+    await mainWindow.mouse.up()
+  })
+
+  test('pre-slide: cross-group drag shifts first row independently from its header', async ({ mainWindow }) => {
+    // Drag rootC (upper, in_progress, no subtasks) DOWN onto rootTodo
+    // (lower, todo first/only row). Only rootTodo shifts — the todo
+    // group's header is a plain div with no CSS transform applied by the
+    // sortable strategy. Regression check for the "header is attached to
+    // first task" complaint.
+    const srcBox = await taskRow(mainWindow, rootC).boundingBox()
+    if (!srcBox) throw new Error('src missing')
+    await dragHover(
+      mainWindow,
+      { x: srcBox.x + srcBox.width / 2, y: srcBox.y + srcBox.height / 2 },
+      rowDropPoint(mainWindow, rootTodo)
+    )
+    const samples = await sampleRowTransforms(mainWindow)
+    const header = samples.find((s) => s.id === 'header:todo')
+    const firstRow = samples.find((s) => s.id === rootTodo)
+    if (!header || !firstRow) throw new Error('header or rootTodo not sampled')
+    expect(firstRow.transformY).toBeLessThan(0)
+    expect(header.transformY).toBe(0)
     await mainWindow.mouse.up()
   })
 

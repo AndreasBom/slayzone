@@ -102,19 +102,6 @@ interface GroupDropData {
   groupValue: string
 }
 
-/** Synthetic sortable item for each non-special group's header. Disabled for
- * user drag (just `draggable: true` disabled) so the user can't pick up a
- * header, but registered as a sortable so its rect participates in the strategy's
- * index math + it's a real drop target. The custom strategy below clamps the
- * over-index to the over-group's header during cross-group drag, which moves
- * the header up to absorb the source slot's empty space instead of dragging
- * the over-group's first row up into the source group. */
-interface HeaderSortableData {
-  kind: 'header'
-  projectId: string
-  groupValue: string
-}
-
 interface TaskBranchCtx {
   childrenByParent: Map<string, Task[]>
   activeTaskId: string | null
@@ -556,32 +543,27 @@ function TaskDragPreview({ tasks }: { tasks: Task[] }): ReactNode {
   )
 }
 
-function HeaderSortable({
-  projectId,
+function GroupHeader({
   groupKey,
   className,
   children,
 }: {
-  projectId: string
   groupKey: string
   className?: string
   children: ReactNode
 }): ReactNode {
-  const { setNodeRef, transform, transition } = useSortable({
-    id: `header:${projectId}:${groupKey}`,
-    data: { kind: 'header', projectId, groupValue: groupKey } satisfies HeaderSortableData,
-    disabled: { draggable: true },
-  })
-  // Apply transform/transition so the header slides like any other sortable
-  // item — without these, dnd-kit's strategy thinks the header moved (it's
-  // in the index space) but the DOM stays put, so neighbors visually overlap
-  // it during a cross-group drag.
-  const style: CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  }
+  // Plain div — NOT a sortable. Headers stay anchored to the page while
+  // tasks slide beneath them. Treating headers as sortable items makes
+  // them slide in lockstep with their group, which reads visually as
+  // "header attached to the first row" and obscures the per-row
+  // pre-slide animation. Drop semantics still work via task collisions
+  // alone.
   return (
-    <div ref={setNodeRef} style={style} className={className}>
+    <div
+      className={className}
+      data-sidebar-tree-item="header"
+      data-group-key={groupKey}
+    >
       {children}
     </div>
   )
@@ -936,24 +918,22 @@ export function TreeView({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
-  // `closestCenter` flips `over` at row-boundaries (vs `pointerWithin`
-  // which only knows if the pointer is inside a rect). That's what makes
-  // standard dnd-kit sortable drop "above target" feel right — to drop
-  // after a row, the user hovers the next row.
-  // Then prefer sortable items (task rows + group headers) over the larger
-  // group wrapper droppables when the pointer center is closest to both —
-  // wrapper rects span the whole group and would otherwise win over inner
-  // sortable items.
+  // All drops route to task rows. Headers are sortable for the strategy
+  // (slide with content) but `disabled.droppable` keeps them out of the
+  // collision list. Group wrappers (kind='group') remain as fallback drop
+  // targets so empty groups can still receive a drop. `closestCenter`
+  // flips `over` at row-boundaries, giving sortable "above/below target"
+  // feel — direction-aware insertion in `handleDragEnd` finishes the job.
   const collisionDetection = useCallback<CollisionDetection>((args) => {
     const all = closestCenter(args)
     if (all.length <= 1) return all
-    const sortables = all.filter((c) => {
+    const tasks = all.filter((c) => {
       const data = args.droppableContainers.find((d) => d.id === c.id)?.data?.current as
         | { kind?: string }
         | undefined
-      return data?.kind === 'task' || data?.kind === 'header'
+      return data?.kind === 'task'
     })
-    return sortables.length > 0 ? sortables : all
+    return tasks.length > 0 ? tasks : all
   }, [])
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
@@ -1108,7 +1088,7 @@ export function TreeView({
     if (!activeData || activeData.kind !== 'task') return
     const sourceId = active.id as string
 
-    const overData = over.data.current as TaskRowDragData | GroupDropData | HeaderSortableData | undefined
+    const overData = over.data.current as TaskRowDragData | GroupDropData | undefined
     if (!overData) return
 
     if (overData.projectId !== activeData.projectId) return
@@ -1126,42 +1106,8 @@ export function TreeView({
       : [sourceId]
     if (movedIds.length === 0) return
 
-    // === Drop on a group header (synthetic sortable) — insert at START of
-    // that group (idx 0). Unlike the wrapper-droppable below which appends.
-    if (overData.kind === 'header') {
-      const g = groupByKey.get(overData.groupValue)
-      if (!g || g.isTemp || g.isPinned || g.isNone) return
-      if (
-        movedIds.length === 1 &&
-        activeData.parentId === null &&
-        overData.groupValue === activeData.groupValue &&
-        g.tasks[0]?.id === sourceId
-      ) {
-        return
-      }
-      const movedSet = new Set(movedIds)
-      const newSiblings = [
-        ...movedIds,
-        ...g.tasks.map((t) => t.id).filter((id) => !movedSet.has(id)),
-      ]
-      const fieldUpdate: Partial<Task> = treeGroupBy === 'status'
-        ? { status: overData.groupValue as Task['status'] }
-        : { priority: parseInt(overData.groupValue.slice(1), 10) }
-      if (movedIds.length === 1) {
-        if (activeData.parentId !== null) {
-          onTaskReparent?.(sourceId, null, newSiblings)
-          onTaskFieldUpdate?.(sourceId, fieldUpdate)
-        } else {
-          onTaskMove?.(sourceId, overData.groupValue, 0, treeGroupBy)
-        }
-      } else {
-        onTaskBulkReparent?.(movedIds, null, newSiblings)
-        onTaskBulkFieldUpdate?.(movedIds, fieldUpdate)
-      }
-      return
-    }
-
-    // === Drop on a group header — all moved become roots in that group. ===
+    // === Drop on an empty group wrapper — fallback for groups with no
+    // task rows to act as a target. Append to the group.
     if (overData.kind === 'group') {
       const g = groupByKey.get(overData.groupValue)
       if (!g || g.isTemp || g.isPinned) return
@@ -1186,7 +1132,15 @@ export function TreeView({
           onTaskReparent?.(sourceId, null, newSiblings)
           onTaskFieldUpdate?.(sourceId, fieldUpdate)
         } else {
-          onTaskMove?.(sourceId, overData.groupValue, g.tasks.length, treeGroupBy)
+          // moveTask's targetIndex is in the status-filtered list (subtasks
+          // included). Append = statusCount.
+          const statusCount = tasks.reduce((n, t) => {
+            if (t.project_id !== activeData.projectId) return n
+            if (t.id === sourceId) return n
+            const key = treeGroupBy === 'status' ? t.status : `p${t.priority}`
+            return key === overData.groupValue ? n + 1 : n
+          }, 0)
+          onTaskMove?.(sourceId, overData.groupValue, statusCount, treeGroupBy)
         }
       } else {
         onTaskBulkReparent?.(movedIds, null, newSiblings)
@@ -1209,15 +1163,18 @@ export function TreeView({
       }
     }
 
-    // Drop position matches stock `arrayMove(siblings, sourceIdx, targetIdx)`
-    // semantics — exactly what the strategy's pre-slide animation shows.
-    // Direction matters: source originally BEFORE target (dragging down) →
-    // insert AFTER target; source originally AFTER target (dragging up) →
-    // insert AT target's slot. The previous pointer-Y midpoint test
-    // compared against `over.rect`, which is the POST-transform tracked
-    // rect — once the strategy slid the target row, the midpoint check
-    // fired against a shifted baseline and produced an off-by-one vs. the
-    // visual gap.
+    // Direction-aware insertion. `closestCenter` flips `over` at row
+    // centers, so by the time we land here the pointer has effectively
+    // crossed every row between source and over. Two cases:
+    //   - Same-group, source above over (dragging DOWN): insert AFTER
+    //     over (matches stock `arrayMove`).
+    //   - Same-group, source below over (dragging UP): insert AT over's
+    //     slot, pushing over down.
+    //   - Cross-group, source above over (dragging DOWN into target):
+    //     insert AT over's slot.
+    //   - Cross-group, source below over (dragging UP into target):
+    //     insert AFTER over — this is the "end of upper group" case.
+    // Collapses to: insertIdx = (sameGroup === sourceAbove) ? +1 : +0.
     let siblings: Task[]
     let targetGroupKey: string | null = null
     if (targetParent === null) {
@@ -1234,13 +1191,13 @@ export function TreeView({
     const filteredTargetIdx = filtered.findIndex((s) => s.id === targetId)
     if (filteredTargetIdx === -1) return
     const sourceOrigIdx = siblings.findIndex((s) => s.id === sourceId)
-    const targetOrigIdx = siblings.findIndex((s) => s.id === targetId)
-    // Cross-group drag has sourceOrigIdx === -1 (source not in target's
-    // siblings) — fall through to "insert at target's slot" semantics.
-    const insertIdx =
-      sourceOrigIdx !== -1 && sourceOrigIdx < targetOrigIdx
-        ? filteredTargetIdx + 1
-        : filteredTargetIdx
+    const sameGroup = sourceOrigIdx !== -1
+    const sourceTop = active.rect.current.initial?.top ?? 0
+    const overTop = over.rect.top
+    const sourceAbove = sourceTop < overTop
+    const insertIdx = sameGroup === sourceAbove
+      ? filteredTargetIdx + 1
+      : filteredTargetIdx
     const newSiblingIds = [
       ...filtered.slice(0, insertIdx).map((s) => s.id),
       ...movedIds,
@@ -1261,7 +1218,22 @@ export function TreeView({
       const sameParent = activeData.parentId === targetParent
       if (sameParent) {
         if (targetParent === null && targetGroupKey !== null && activeData.groupValue !== targetGroupKey) {
-          onTaskMove?.(sourceId, targetGroupKey, insertIdx, treeGroupBy)
+          // `moveTask`'s targetIndex is in the STATUS-filtered task list
+          // (subtasks included). `insertIdx` here is in the ROOT-only
+          // siblings list. Translate by finding the next root's position
+          // in the status-filtered list — or append (statusCount) when
+          // inserting past the end.
+          const statusFiltered = tasks.filter((t) => {
+            if (t.project_id !== activeData.projectId) return false
+            if (t.id === sourceId) return false
+            const key = treeGroupBy === 'status' ? t.status : `p${t.priority}`
+            return key === targetGroupKey
+          })
+          const nextRootId = insertIdx < filtered.length ? filtered[insertIdx].id : null
+          const moveIdx = nextRootId
+            ? statusFiltered.findIndex((t) => t.id === nextRootId)
+            : statusFiltered.length
+          onTaskMove?.(sourceId, targetGroupKey, moveIdx >= 0 ? moveIdx : statusFiltered.length, treeGroupBy)
           if (!(treeOrderBy === 'priority' && treeGroupBy === 'priority')) {
             inheritOrderByField(sourceId, targetId)
           }
@@ -1311,7 +1283,7 @@ export function TreeView({
     onTaskBulkReparent, onTaskFieldUpdate, onTaskBulkFieldUpdate,
     treeGroupBy, treeGroupPinned, treeOrderBy, pinnedSet,
     selectedTaskIds, getMovedIdsInRenderOrder,
-    tasksById, wouldCycle, inheritOrderByField,
+    tasksById, tasks, wouldCycle, inheritOrderByField,
   ])
 
   const renderGroupAddButton = (
@@ -1356,17 +1328,7 @@ export function TreeView({
     // group above. Solo-`none` stays headerless (no companions to disambiguate).
     const hasCompanions = groups.length > 1
     return groups.map((g, gi) => {
-      // Top padding on every group except the first acts as the static gap
-      // between groups; lives on the lower group so its droppable rect
-      // extends up into the gap zone.
-      // Inter-group gap lives INSIDE the header's top padding (not on the
-      // wrapper) so the gap zone counts as part of the header's hit area —
-      // pointer in the gap maps to the header sortable, no flicker zone.
       const headerPadTopClass = gi === 0 ? 'pt-2' : 'pt-4'
-      // Only "real" groups (not pinned/temp/none) participate as sortable
-      // header items — pinned/temp/none don't have a drop semantic so they
-      // don't need to sit in the strategy's index space.
-      const headerIsSortable = !g.isPinned && !g.isTemp && !g.isNone
       let label: string
       let Icon: typeof Clock | null = null
       let iconClass: string | undefined
@@ -1402,15 +1364,9 @@ export function TreeView({
       const groupBody = (
         <>
           {showHeader && (
-            headerIsSortable
-              ? (
-                <HeaderSortable projectId={projectId} groupKey={g.key} className={headerClassName}>
-                  {headerInner}
-                </HeaderSortable>
-              )
-              : (
-                <div className={headerClassName}>{headerInner}</div>
-              )
+            <GroupHeader groupKey={g.key} className={headerClassName}>
+              {headerInner}
+            </GroupHeader>
           )}
           {g.tasks.map((task, i) => (
             <TaskBranch
@@ -1443,11 +1399,10 @@ export function TreeView({
     const isHomeActive =
       selectedProjectId === project.id && activeTabType === 'home' && !isContextActive
     const dragEnabled = Boolean(onTaskReorder) && Boolean(onTaskMove)
-    // Project-wide flat sortable IDs in render order. Each "real" group
-    // (status / priority — not pinned/temp/none) gets a synthetic header ID
-    // pushed before its tasks. The header is a disabled sortable so it
-    // sits in the strategy's index space and slides with its content
-    // during cross-group drags — keeping the group visually cohesive.
+    // Project-wide flat sortable IDs in render order — TASKS ONLY.
+    // Headers are plain divs, NOT sortables: tasks slide individually
+    // beneath their headers during pre-slide, keeping the header
+    // anchored as a static label rather than dragged along with content.
     const flatTaskIds: string[] = []
     {
       const walk = (t: Task) => {
@@ -1456,9 +1411,6 @@ export function TreeView({
         for (const k of kids) walk(k)
       }
       for (const g of groups) {
-        if (!g.isPinned && !g.isTemp && !g.isNone) {
-          flatTaskIds.push(`header:${project.id}:${g.key}`)
-        }
         for (const root of g.tasks) walk(root)
       }
     }
