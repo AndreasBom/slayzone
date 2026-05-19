@@ -779,18 +779,13 @@ test.describe('TreeView drag and drop', () => {
     await mainWindow.mouse.up()
   })
 
-  test('pre-slide: cross-group drag does not drift target row into source group', async ({
+  test('pre-slide: cross-group drag shifts items in (active, over] UP (standard arrayMove)', async ({
     mainWindow
   }) => {
-    // Drag rootC (in_progress, no subtasks) DOWN onto rootTodo. Test
-    // project has no custom columns, so in_progress renders ABOVE todo
-    // (task-insertion order). `verticalListSortingStrategy` shifts items
-    // between (active, over] by -activeRect.height - itemGap (the inter-
-    // item space, which now includes the static todo header height since
-    // the header is not a sortable). rootTodo's CSS transform should be
-    // a bounded single-row + header-gap shift up — never a multi-row
-    // drift past the gap. `transformY` (raw CSS transform) avoids auto-
-    // scroll noise.
+    // Standard verticalListSortingStrategy: items strictly between active
+    // and over (inclusive of over) shift UP by source.height. Source's
+    // DOM slot stays at orig with opacity 0 — items shift into it to
+    // close the gap. Flat-list behavior, no group awareness.
     const srcBox = await taskRow(mainWindow, rootC).boundingBox()
     if (!srcBox) throw new Error('source box missing')
     await dragHover(
@@ -800,22 +795,16 @@ test.describe('TreeView drag and drop', () => {
     )
     const samples = await sampleRowTransforms(mainWindow)
     const todoSample = samples.find((s) => s.id === rootTodo)
-    if (!todoSample) throw new Error('rootTodo not sampled')
+    const header = samples.find((s) => s.id === 'header:todo')
+    if (!todoSample || !header) throw new Error('rootTodo or header not sampled')
     expect(todoSample.transformY).toBeLessThan(0)
-    // Active row height (32) + todo header (~31 = pt-4 + text + pb-1) + slack.
-    expect(todoSample.transformY).toBeGreaterThanOrEqual(-80)
+    expect(header.transformY).toBeLessThan(0)
     await mainWindow.mouse.up()
   })
 
-  test('pre-slide: group header slides with content (sortable, drag-disabled)', async ({
+  test('pre-slide: header slides with content (sortable, drag-disabled)', async ({
     mainWindow
   }) => {
-    // Drag rootC (in_progress, no subtasks — so `dragCollapseSet` does
-    // not collapse anything and the layout above the todo header stays
-    // stable) downward toward rootTodo. The `todo` group header is a
-    // sortable participant with drag disabled — it tweens together with
-    // the rest of the row list. While the drag is live, the header's
-    // CSS transformY should be a negative shift (~ -activeRowHeight).
     const samples1 = await sampleRowTransforms(mainWindow)
     expect(samples1.find((s) => s.id === 'header:todo')).toBeDefined()
 
@@ -829,7 +818,6 @@ test.describe('TreeView drag and drop', () => {
     const samples2 = await sampleRowTransforms(mainWindow)
     const headerSample = samples2.find((s) => s.id === 'header:todo')
     if (!headerSample) throw new Error('todo header not sampled')
-    // Header must slide up alongside its content — no longer anchored.
     expect(headerSample.transformY).toBeLessThan(0)
     await mainWindow.mouse.up()
   })
@@ -862,15 +850,9 @@ test.describe('TreeView drag and drop', () => {
     await mainWindow.mouse.up()
   })
 
-  test('pre-slide: cross-group drag shifts header AND first row together', async ({
+  test('pre-slide: cross-group drag shifts header AND first row together (flat list)', async ({
     mainWindow
   }) => {
-    // Drag rootC (upper, in_progress, no subtasks) DOWN onto rootTodo
-    // (lower, todo first/only row). Header is now a sortable participant
-    // with drag disabled — it slides together with the rows under it. Both
-    // the todo header AND rootTodo should shift up by the active row's
-    // height while the cursor hovers over rootTodo. No "header attached to
-    // first row" discrepancy — they tween in lockstep.
     const srcBox = await taskRow(mainWindow, rootC).boundingBox()
     if (!srcBox) throw new Error('src missing')
     await dragHover(
@@ -1227,4 +1209,5 @@ test.describe('TreeView drag and drop', () => {
       await mainWindow.evaluate((id) => window.api.db.deleteTask(id), rootDone.id)
     }
   })
+
 })

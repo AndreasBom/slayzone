@@ -32,7 +32,11 @@ import {
   type DragEndEvent,
   type DragStartEvent
 } from '@dnd-kit/core'
-import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy
+} from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import {
   cn,
@@ -233,6 +237,7 @@ function rowGroupValue(
   if (groupBy === 'priority') return `p${typeof task.priority === 'number' ? task.priority : 5}`
   return task.status
 }
+
 
 function TaskRow({
   task,
@@ -1021,23 +1026,16 @@ export function TreeView({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
-  // All drops route to task rows. Headers are sortable for the strategy
-  // (slide with content) but `disabled.droppable` keeps them out of the
-  // collision list. Group wrappers (kind='group') remain as fallback drop
-  // targets so empty groups can still receive a drop. `closestCenter`
-  // flips `over` at row-boundaries, giving sortable "above/below target"
-  // feel — direction-aware insertion in `handleDragEnd` finishes the job.
-  const collisionDetection = useCallback<CollisionDetection>((args) => {
-    const all = closestCenter(args)
-    if (all.length <= 1) return all
-    const tasks = all.filter((c) => {
-      const data = args.droppableContainers.find((d) => d.id === c.id)?.data?.current as
-        | { kind?: string }
-        | undefined
-      return data?.kind === 'task'
-    })
-    return tasks.length > 0 ? tasks : all
-  }, [])
+  // `closestCenter` resolves `over` per pointer position. Headers ARE
+  // valid drop targets (kind='group'): when pointer is closest to a
+  // header, that header becomes `over`, the strategy slides just the
+  // header (not the first/last task of the adjacent group), and the
+  // visible gap appears at the inter-group boundary — matching user
+  // mental model "drop between groups lands between groups".
+  const collisionDetection = useCallback<CollisionDetection>(
+    (args) => closestCenter(args),
+    []
+  )
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     setActiveDragTaskId(event.active.id as string)
@@ -1228,42 +1226,120 @@ export function TreeView({
         : [sourceId]
       if (movedIds.length === 0) return
 
-      // === Drop on an empty group wrapper — fallback for groups with no
-      // task rows to act as a target. Append to the group.
+      // === Drop on a header. Use arrayMove(active, over) on the flat row
+      // order to compute source's new position; source's new group =
+      // nearest header above the new position. This matches the pre-slide
+      // visual (the verticalListSortingStrategy uses the same arrayMove).
+      // For drag DOWN onto a header → source lands at top of header's group.
+      // For drag UP onto a header → source lands at end of group ABOVE the
+      // header (i.e. above the header in flat order).
       if (overData.kind === 'group') {
-        const g = groupByKey.get(overData.groupValue)
-        if (!g || g.isTemp || g.isPinned) return
-        // Skip when nothing to do (single root already in same group, no-op).
-        if (
-          movedIds.length === 1 &&
-          activeData.parentId === null &&
-          overData.groupValue === activeData.groupValue
-        ) {
+        const projectId = activeData.projectId
+        const projectGroups = rootGroupsByProject.get(projectId) ?? []
+        // Build flat row order (matches render order).
+        const flatIds: string[] = []
+        const flatIsHeader: boolean[] = []
+        const flatGroupOfRow: string[] = []
+        const hasCompanions = projectGroups.length > 1
+        for (const grp of projectGroups) {
+          const showHeader = !grp.isNone || hasCompanions
+          if (showHeader) {
+            flatIds.push(`header:${projectId}:${grp.key}`)
+            flatIsHeader.push(true)
+            flatGroupOfRow.push(grp.key)
+          }
+          const walk = (t: Task): void => {
+            flatIds.push(t.id)
+            flatIsHeader.push(false)
+            flatGroupOfRow.push(grp.key)
+            const kids = childrenByParent.get(t.id) ?? []
+            for (const k of kids) walk(k)
+          }
+          for (const t of grp.tasks) walk(t)
+        }
+        const activeIdx = flatIds.indexOf(sourceId)
+        const overIdx = flatIds.indexOf(over.id as string)
+        if (activeIdx === -1 || overIdx === -1) return
+
+        // arrayMove(flat, activeIdx, overIdx) — source's new position.
+        const newFlatIds = [...flatIds]
+        const newFlatIsHeader = [...flatIsHeader]
+        const newFlatGroupOfRow = [...flatGroupOfRow]
+        const [movedHeaderFlag] = newFlatIsHeader.splice(activeIdx, 1)
+        const [movedGroupTag] = newFlatGroupOfRow.splice(activeIdx, 1)
+        newFlatIds.splice(activeIdx, 1)
+        newFlatIds.splice(overIdx, 0, sourceId)
+        newFlatIsHeader.splice(overIdx, 0, movedHeaderFlag)
+        newFlatGroupOfRow.splice(overIdx, 0, movedGroupTag)
+        const newSourceIdx = newFlatIds.indexOf(sourceId)
+
+        // Walk backward to find source's new group (nearest header above).
+        let newGroupKey: string | null = null
+        for (let i = newSourceIdx - 1; i >= 0; i--) {
+          if (newFlatIsHeader[i]) {
+            newGroupKey = newFlatGroupOfRow[i]
+            break
+          }
+        }
+        // Fallback for 'none' (single ungrouped bucket, no header) or when
+        // source lands above the very first header → keep source's group.
+        if (!newGroupKey) newGroupKey = activeData.groupValue
+
+        const newGroup = groupByKey.get(newGroupKey)
+        if (!newGroup || newGroup.isTemp || newGroup.isPinned) return
+
+        // No-op: same group AND insertion at source's original position.
+        if (newGroupKey === activeData.groupValue && newSourceIdx === activeIdx) {
           return
         }
-        const movedSet = new Set(movedIds)
-        const newSiblings = [
-          ...g.tasks.map((t) => t.id).filter((id) => !movedSet.has(id)),
-          ...movedIds
-        ]
+
+        // Find next root in newGroupKey AFTER source's new idx — used to
+        // translate root-only insertion idx into moveTask's status-filtered
+        // targetIndex (which counts subtasks too).
+        let nextRootId: string | null = null
+        for (let i = newSourceIdx + 1; i < newFlatIds.length; i++) {
+          if (newFlatIsHeader[i]) break
+          if (newFlatGroupOfRow[i] !== newGroupKey) break
+          nextRootId = newFlatIds[i]
+          break
+        }
+        const statusFiltered = tasks.filter((t) => {
+          if (t.project_id !== projectId) return false
+          if (t.id === sourceId) return false
+          const key = treeGroupBy === 'status' ? t.status : `p${t.priority}`
+          return key === newGroupKey
+        })
+        const moveIdxStatus = nextRootId
+          ? statusFiltered.findIndex((t) => t.id === nextRootId)
+          : statusFiltered.length
+
         const fieldUpdate: Partial<Task> =
           treeGroupBy === 'status'
-            ? { status: overData.groupValue as Task['status'] }
-            : { priority: parseInt(overData.groupValue.slice(1), 10) }
+            ? { status: newGroupKey as Task['status'] }
+            : { priority: parseInt(newGroupKey.slice(1), 10) }
+
+        // Root-only newSiblings for bulk reparent + subtask source reparent.
+        const movedSet = new Set(movedIds)
+        const rootOnlyMoveIdx = (() => {
+          let count = 0
+          for (let i = 0; i < newSourceIdx; i++) {
+            if (newFlatIsHeader[i]) continue
+            if (newFlatGroupOfRow[i] !== newGroupKey) continue
+            count++
+          }
+          return count
+        })()
+        const newSiblings = newGroup.tasks
+          .map((t) => t.id)
+          .filter((id) => !movedSet.has(id))
+        newSiblings.splice(rootOnlyMoveIdx, 0, ...movedIds)
+
         if (movedIds.length === 1) {
           if (activeData.parentId !== null) {
             onTaskReparent?.(sourceId, null, newSiblings)
             onTaskFieldUpdate?.(sourceId, fieldUpdate)
           } else {
-            // moveTask's targetIndex is in the status-filtered list (subtasks
-            // included). Append = statusCount.
-            const statusCount = tasks.reduce((n, t) => {
-              if (t.project_id !== activeData.projectId) return n
-              if (t.id === sourceId) return n
-              const key = treeGroupBy === 'status' ? t.status : `p${t.priority}`
-              return key === overData.groupValue ? n + 1 : n
-            }, 0)
-            onTaskMove?.(sourceId, overData.groupValue, statusCount, treeGroupBy)
+            onTaskMove?.(sourceId, newGroupKey, moveIdxStatus, treeGroupBy)
           }
         } else {
           onTaskBulkReparent?.(movedIds, null, newSiblings)
@@ -1489,7 +1565,7 @@ export function TreeView({
   // sub-tasks). Render order = sortable measurement order. Solo-`none` group
   // skips its header — no companions to disambiguate, so the rows just look
   // like the project's default list.
-  const buildRowList = (groups: TreeGroup[], projectId: string): RowItem[] => {
+  const buildRowList = (groups: TreeGroup[], projectId: string): { rows: RowItem[] } => {
     const rows: RowItem[] = []
     const hasCompanions = groups.length > 1
     for (let gi = 0; gi < groups.length; gi++) {
@@ -1510,7 +1586,7 @@ export function TreeView({
       }
       g.tasks.forEach((t, i) => walk(t, 1, [i < g.tasks.length - 1]))
     }
-    return rows
+    return { rows }
   }
 
   const renderProject = (project: (typeof sortedProjects)[number]) => {
@@ -1525,7 +1601,7 @@ export function TreeView({
     // Flat row list: headers + tasks in DFS order. Header rows participate
     // in the SortableContext so they tween together with surrounding rows,
     // but their drag listeners are disabled — they slide, they don't drag.
-    const rows = buildRowList(groups, project.id)
+    const { rows } = buildRowList(groups, project.id)
     const rowIds = rows.map((r) => r.rowId)
     const flatTaskIds = rows.flatMap((r) => (r.kind === 'task' ? [r.rowId] : []))
     // Compute first/last-in-run flags for each selected task, scanning
