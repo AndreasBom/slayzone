@@ -21,7 +21,10 @@ export interface InstallNotifyScriptOpts {
 export async function installNotifyScript(
   opts: InstallNotifyScriptOpts = {}
 ): Promise<{ path: string; changed: boolean }> {
-  const target = opts.targetPath ?? path.join(getSlayzoneHomeDir(), 'hooks', 'notify.sh')
+  const targetRaw = opts.targetPath ?? path.join(getSlayzoneHomeDir(), 'hooks', 'notify.sh')
+  // Normalize to forward slashes so the bash interpreter on Windows doesn't
+  // treat backslashes as escape characters when Claude Code invokes the hook.
+  const target = targetRaw.replace(/\\/g, '/')
   const source =
     opts.source ??
     (typeof notifyScriptSource === 'string' ? notifyScriptSource : String(notifyScriptSource))
