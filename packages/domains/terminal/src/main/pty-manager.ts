@@ -47,6 +47,7 @@ import {
 import { computeSyncQueryResponse, type TerminalTheme } from './sync-query-response'
 import { filterBufferData } from './filter-buffer-data'
 import { buildMcpEnv } from './mcp-env'
+import { buildTransportSpawn } from './transport-spawn'
 import { killByTaskId as killChatsByTaskId } from './chat-transport-manager'
 import { markSessionUserInput, clearSessionUserInputMark } from './user-input-tracker'
 export { filterBufferData }
@@ -465,67 +466,8 @@ export function stopIdleChecker(): void {
 // ---------------------------------------------------------------------------
 // Execution context: transport wrapping for docker/ssh
 // ---------------------------------------------------------------------------
-
-interface TransportSpawn {
-  file: string
-  args: string[]
-  cwd: string
-  env: Record<string, string>
-}
-
-function buildTransportSpawn(
-  ctx: ExecutionContext | null | undefined,
-  cwd: string,
-  env: Record<string, string>,
-  adapterEnv: Record<string, string>,
-  mcpEnv: Record<string, string>
-): TransportSpawn | null {
-  if (!ctx || ctx.type === 'host') return null // use default spawn path
-
-  if (ctx.type === 'docker') {
-    const workdir = ctx.workdir || cwd
-    const containerShell = ctx.shell || '/bin/bash'
-    const dockerArgs = ['exec', '-it']
-
-    // Forward adapter + MCP env vars via -e flags
-    for (const [k, v] of Object.entries({ ...adapterEnv, ...mcpEnv })) {
-      dockerArgs.push('-e', `${k}=${v}`)
-    }
-    // Rewrite MCP host so CLI can reach the host's MCP server from inside container
-    dockerArgs.push('-e', 'SLAYZONE_MCP_HOST=host.docker.internal')
-    dockerArgs.push('-w', workdir, '--', ctx.container, containerShell, '-i', '-l')
-
-    return { file: 'docker', args: dockerArgs, cwd: homedir(), env }
-  }
-
-  if (ctx.type === 'ssh') {
-    const workdir = ctx.workdir || cwd
-    const remoteShell = ctx.shell || '/bin/bash'
-    const mcpPort = (globalThis as Record<string, unknown>).__mcpPort as number | undefined
-
-    const sshArgs = ['-t']
-    // Reverse port forward so remote CLI can reach host MCP server
-    if (mcpPort) {
-      sshArgs.push('-R', `${mcpPort}:localhost:${mcpPort}`)
-    }
-    sshArgs.push('--', ctx.target)
-
-    // Build remote command: cd + export env + launch shell
-    const parts: string[] = [`cd ${quoteForShell(workdir)}`]
-    for (const [k, v] of Object.entries({ ...adapterEnv, ...mcpEnv })) {
-      parts.push(`export ${k}=${quoteForShell(v)}`)
-    }
-    if (mcpPort) {
-      parts.push(`export SLAYZONE_MCP_HOST=localhost`)
-    }
-    parts.push(`${quoteForShell(remoteShell)} -i -l`)
-    sshArgs.push(parts.join(' && '))
-
-    return { file: 'ssh', args: sshArgs, cwd: homedir(), env }
-  }
-
-  return null
-}
+// Implementation extracted to ./transport-spawn so it can be unit-tested
+// without dragging in electron-tainted module-level imports.
 
 export function testExecutionContext(
   context: ExecutionContext
@@ -537,14 +479,24 @@ export function testExecutionContext(
     }
 
     const cmd = context.type === 'docker' ? 'docker' : 'ssh'
+    // For SSH we also probe `tmux` so the user gets a clear error up-front if
+    // the remote is missing tmux — sessions wrap in `tmux new-session` and
+    // would otherwise fail opaquely on first spawn.
     const args =
       context.type === 'docker'
         ? ['exec', '--', context.container, 'echo', 'ok']
-        : ['-o', 'ConnectTimeout=5', '--', context.target, 'echo', 'ok']
+        : [
+            '-o',
+            'ConnectTimeout=5',
+            '--',
+            context.target,
+            'command -v tmux >/dev/null 2>&1 && echo ok || (echo "tmux not found on remote host" 1>&2; exit 1)'
+          ]
 
-    execFile(cmd, args, { timeout: 10_000 }, (err) => {
+    execFile(cmd, args, { timeout: 10_000 }, (err, _stdout, stderr) => {
       if (err) {
-        resolve({ success: false, error: (err as Error).message })
+        const detail = stderr && stderr.trim().length > 0 ? stderr.trim() : (err as Error).message
+        resolve({ success: false, error: detail })
       } else {
         resolve({ success: true })
       }
@@ -643,6 +595,23 @@ export async function createPty(
     payload: {
       mode: mode ?? null,
       type: type ?? null,
+      executionContext: executionContext
+        ? executionContext.type === 'ssh'
+          ? {
+              type: 'ssh',
+              target: executionContext.target,
+              workdir: executionContext.workdir ?? null,
+              shell: executionContext.shell ?? null
+            }
+          : executionContext.type === 'docker'
+            ? {
+                type: 'docker',
+                container: executionContext.container,
+                workdir: executionContext.workdir ?? null,
+                shell: executionContext.shell ?? null
+              }
+            : { type: executionContext.type }
+        : null,
       initialCommand: initialCommand ?? null,
       resumeCommand: resumeCommand ?? null,
       defaultFlags: defaultFlags ?? null,
@@ -748,8 +717,23 @@ export async function createPty(
       cwd || homedir(),
       baseEnv,
       spawnConfig.env ?? {},
-      mcpEnv
+      mcpEnv,
+      sessionId
     )
+
+    recordDiagnosticEvent({
+      level: 'info',
+      source: 'pty',
+      event: 'pty.transport_resolved',
+      sessionId,
+      taskId,
+      payload: {
+        executionContextType: executionContext?.type ?? null,
+        transportFile: transport?.file ?? null,
+        transportArgsCount: transport?.args.length ?? 0,
+        transportCwd: transport?.cwd ?? null
+      }
+    })
 
     // Validate cwd exists AND is readable before spawn. posix_spawnp fails
     // opaquely on missing dirs; a dir that exists but isn't readable (mode

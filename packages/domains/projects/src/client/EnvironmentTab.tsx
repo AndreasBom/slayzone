@@ -252,6 +252,11 @@ export function EnvironmentTab({ project, onUpdated, onClose }: EnvironmentTabPr
             <p className="text-xs text-muted-foreground">
               Key-based auth must be set up so no password prompt is needed.
             </p>
+            <p className="text-xs text-muted-foreground">
+              Sessions run inside <code className="font-mono">tmux</code> on the remote host so
+              they survive SSH disconnects and SlayZone restarts — reattach is automatic. Make
+              sure <code className="font-mono">tmux</code> is installed there.
+            </p>
           </div>
         )}
         <div className="flex justify-end gap-2">
