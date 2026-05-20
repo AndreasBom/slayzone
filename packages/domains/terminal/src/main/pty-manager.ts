@@ -8,8 +8,17 @@ import { BrowserWindow, nativeTheme, ipcMain } from 'electron'
 import { homedir, platform, tmpdir, userInfo } from 'os'
 import { getSlayzoneHomeDir } from '@slayzone/platform'
 import type { Database } from 'better-sqlite3'
-import { DEV_SERVER_URL_PATTERN, extractOscTitle } from '@slayzone/terminal/shared'
-import type { TerminalState, PtyInfo, BufferSinceResult } from '@slayzone/terminal/shared'
+import {
+  DEV_SERVER_URL_PATTERN,
+  extractOscTitle,
+  HOOK_SUPPORTED_AGENT_IDS
+} from '@slayzone/terminal/shared'
+import type {
+  TerminalState,
+  PtyInfo,
+  BufferSinceResult,
+  AgentId
+} from '@slayzone/terminal/shared'
 import { getDiagnosticsConfig, recordDiagnosticEvent } from '@slayzone/diagnostics/main'
 import { RingBuffer, type BufferChunk } from './ring-buffer'
 import {
@@ -81,6 +90,19 @@ export function setSpawnedTabRecorder(fn: SpawnedSetter | null): void {
 let isShuttingDown = false
 export function setShuttingDown(v: boolean): void {
   isShuttingDown = v
+}
+
+/**
+ * Optional remote-hook installer. Injected by composition root (apps/app) so
+ * pty-manager doesn't import the agent-hooks module directly (would cycle:
+ * agent-hooks lives in apps/app, which already depends on terminal). When
+ * present and the execution context is ssh, createPty calls this before
+ * spawning so notify.sh + settings.json get deployed to the remote host.
+ */
+type RemoteHookInstaller = (opts: { sshExecutable: string; target: string }) => Promise<void>
+let remoteHookInstaller: RemoteHookInstaller | null = null
+export function setRemoteHookInstaller(fn: RemoteHookInstaller | null): void {
+  remoteHookInstaller = fn
 }
 
 /** Resolve the terminal_tabs row id this PTY session corresponds to.
@@ -734,6 +756,40 @@ export async function createPty(
         transportCwd: transport?.cwd ?? null
       }
     })
+
+    // When running on a remote host, push the agent lifecycle hooks (notify.sh
+    // + ~/.claude/settings.json patch) to the remote BEFORE we spawn so the
+    // first event the agent emits hits a wired hook. Best-effort: if install
+    // fails we log a warning and continue — agent works without status
+    // detection, which is preferable to refusing to spawn.
+    if (
+      transport &&
+      executionContext?.type === 'ssh' &&
+      remoteHookInstaller &&
+      HOOK_SUPPORTED_AGENT_IDS.has(terminalMode as AgentId)
+    ) {
+      try {
+        await remoteHookInstaller({ sshExecutable: transport.file, target: executionContext.target })
+        recordDiagnosticEvent({
+          level: 'info',
+          source: 'pty',
+          event: 'pty.remote_hooks_installed',
+          sessionId,
+          taskId,
+          payload: { target: executionContext.target }
+        })
+      } catch (err) {
+        recordDiagnosticEvent({
+          level: 'warn',
+          source: 'pty',
+          event: 'pty.remote_hooks_install_failed',
+          sessionId,
+          taskId,
+          message: (err as Error).message,
+          payload: { target: executionContext.target }
+        })
+      }
+    }
 
     // Validate cwd exists AND is readable before spawn. posix_spawnp fails
     // opaquely on missing dirs; a dir that exists but isn't readable (mode

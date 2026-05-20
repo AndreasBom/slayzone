@@ -98,7 +98,11 @@ export function buildTransportSpawn(
       mcpPortOverride ?? ((globalThis as Record<string, unknown>).__mcpPort as number | undefined)
 
     const sshArgs = ['-t']
-    if (mcpPort) sshArgs.push('-R', `${mcpPort}:localhost:${mcpPort}`)
+    // Use explicit 127.0.0.1 instead of `localhost` so ssh doesn't try the
+    // IPv6 ::1 address first on hosts where `localhost` is dual-stack — the
+    // SlayZone MCP server binds IPv4 only and a ::1 attempt yields a silent
+    // "empty reply" via the tunnel.
+    if (mcpPort) sshArgs.push('-R', `${mcpPort}:127.0.0.1:${mcpPort}`)
     sshArgs.push('--', ctx.target)
 
     const innerParts: string[] = [`cd ${quoteForShell(workdir)}`]

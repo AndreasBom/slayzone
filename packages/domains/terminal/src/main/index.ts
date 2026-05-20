@@ -28,6 +28,7 @@ export {
   type EnsureAliveResult,
   PTY_EXIT_KILLED_BY_HOST,
   setSpawnedTabRecorder as setPtySpawnedTabRecorder,
+  setRemoteHookInstaller,
   findSessionByTaskIdAndMode,
   transitionStateFromHook,
   markSessionActiveFromHook

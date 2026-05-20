@@ -216,8 +216,10 @@ import {
   setPtyEnricher,
   setPtySpawnedTabRecorder,
   setChatSpawnedTabRecorder,
+  setRemoteHookInstaller,
   beginTerminalShutdown
 } from '@slayzone/terminal/main'
+import { setupRemoteAgentHooks } from './agent-hooks/remote-hook-installer'
 import { setProviderLastKilledAt, type ProviderConfig } from '@slayzone/task/shared'
 import {
   attachFloatingGlobalAgentPanel,
@@ -1473,6 +1475,11 @@ app
 
     registerTerminalTabsHandlers(ipcMain, db)
     setPtyEnricher(createPtyEnricher(db))
+    // Inject the remote agent-hook installer so pty-manager can deploy
+    // notify.sh + ~/.claude/settings.json to a remote host before spawning an
+    // ssh-backed agent (without dragging the agent-hooks domain into the
+    // terminal package).
+    setRemoteHookInstaller(setupRemoteAgentHooks)
     // Wire the per-tab `was_spawned` flag so pty + chat spawn/exit handlers
     // can flip it without importing the task-terminals package (would cycle).
     // Composition root resolves the dependency direction.
