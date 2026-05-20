@@ -958,9 +958,14 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
     if (panelVisibility.browser) setDetectedDevUrl(null)
   }, [panelVisibility.browser])
 
+  // Path validation only applies to local execution contexts. Remote contexts
+  // (ssh, docker) store paths that exist on the *remote* host — checking them
+  // against the local fs would always fail.
+  const pathLivesLocally = !project?.execution_context || project.execution_context.type === 'host'
+
   // Re-check project path on window focus
   useEffect(() => {
-    if (!project?.path) return
+    if (!project?.path || !pathLivesLocally) return
 
     const checkProjectPathExists = async (path: string): Promise<boolean> => {
       const pathExists = window.api.files?.pathExists
@@ -974,11 +979,11 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
     }
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
-  }, [project?.path])
+  }, [project?.path, pathLivesLocally])
 
   // Check project path exists when project changes
   useEffect(() => {
-    if (!project?.path) {
+    if (!project?.path || !pathLivesLocally) {
       setProjectPathMissing(false)
       return
     }
@@ -991,7 +996,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
     return () => {
       cancelled = true
     }
-  }, [project?.path])
+  }, [project?.path, pathLivesLocally])
 
   // Handle session ID creation from terminal — persist to DB only.
   // Don't setTask/onTaskUpdated: the conversation ID is internal terminal state.

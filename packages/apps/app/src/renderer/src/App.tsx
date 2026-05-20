@@ -429,10 +429,16 @@ function App(): React.JSX.Element {
     [homeSelectedProject?.id, updateProject]
   )
 
-  // Project path validation
+  // Project path validation — only meaningful for local execution contexts.
+  // For ssh/docker the path lives on the remote and would always look missing
+  // to the host fs check.
   const [projectPathMissing, setProjectPathMissing] = useState(false)
   const validateProjectPath = useCallback(async (project: Project | undefined) => {
     if (!project?.path) {
+      setProjectPathMissing(false)
+      return
+    }
+    if (project.execution_context && project.execution_context.type !== 'host') {
       setProjectPathMissing(false)
       return
     }
