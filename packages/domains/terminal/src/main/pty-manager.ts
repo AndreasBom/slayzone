@@ -948,7 +948,21 @@ export async function createPty(
         sessionId,
         taskId: taskIdFromSessionId(sessionId),
         payload: {
-          exitCode
+          exitCode,
+          // Capture tail of the ring buffer so we can see whatever ssh/tmux
+          // emitted right before exit (host key prompt, sshd auth error, tmux
+          // "no such session", etc).
+          bufferTail: (() => {
+            try {
+              const raw = exitSession?.buffer.toString() ?? ''
+              return raw
+                .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+                .replace(/\x1b[()][AB012]/g, '')
+                .slice(-800)
+            } catch {
+              return null
+            }
+          })()
         }
       })
       // Host-initiated kill (e.g. task moved to terminal status). Let the app

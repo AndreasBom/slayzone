@@ -1,6 +1,37 @@
-import { homedir } from 'os'
+import { homedir, platform } from 'os'
+import { existsSync } from 'fs'
+import path from 'path'
 import type { ExecutionContext } from '@slayzone/terminal/shared'
 import { quoteForShell } from './shell-env'
+
+/**
+ * Resolve the ssh executable. node-pty on Windows uses CreateProcessW under
+ * the hood and does not always resolve a bare `ssh` against PATH the way
+ * cmd.exe does — it fails with the generic "File not found". On Windows we
+ * therefore prefer the Microsoft OpenSSH client at
+ * `%SystemRoot%\System32\OpenSSH\ssh.exe`, fall back to the Git for Windows
+ * port if that's missing, and finally the bare name (so Linux/macOS still
+ * use the PATH-resolved binary).
+ *
+ * Override via `SLAYZONE_SSH_PATH` if you need a specific binary.
+ */
+function resolveSshExecutable(): string {
+  const override = process.env.SLAYZONE_SSH_PATH
+  if (override && existsSync(override)) return override
+  if (platform() !== 'win32') return 'ssh'
+  const candidates = [
+    process.env.SystemRoot
+      ? path.join(process.env.SystemRoot, 'System32', 'OpenSSH', 'ssh.exe')
+      : null,
+    process.env.ProgramFiles
+      ? path.join(process.env.ProgramFiles, 'Git', 'usr', 'bin', 'ssh.exe')
+      : null
+  ].filter((c): c is string => !!c)
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return 'ssh'
+}
 
 export interface TransportSpawn {
   file: string
@@ -85,7 +116,7 @@ export function buildTransportSpawn(
       sshArgs.push(innerScript)
     }
 
-    return { file: 'ssh', args: sshArgs, cwd: homedir(), env }
+    return { file: resolveSshExecutable(), args: sshArgs, cwd: homedir(), env }
   }
 
   return null

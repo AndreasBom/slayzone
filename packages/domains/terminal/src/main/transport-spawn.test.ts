@@ -87,7 +87,7 @@ test('falls back to raw script when sessionId omitted', () => {
     {}
   )
   assert(r !== null, 'expected non-null')
-  eq(r!.file, 'ssh')
+  assert(/(^|[\\/])ssh(\.exe)?$/i.test(r!.file), `expected ssh executable, got: ${r!.file}`)
   const last = r!.args[r!.args.length - 1]
   assert(!last.startsWith('tmux'), 'no tmux wrap without sessionId')
   assert(last.includes(`cd ${q('/repo')}`), 'has cd workdir')
@@ -105,7 +105,7 @@ test('wraps inner script in tmux new-session -A -s slz-<id>', () => {
     'sess-1'
   )
   assert(r !== null, 'expected non-null')
-  eq(r!.file, 'ssh')
+  assert(/(^|[\\/])ssh(\.exe)?$/i.test(r!.file), `expected ssh executable, got: ${r!.file}`)
   const last = r!.args[r!.args.length - 1]
   assert(last.startsWith('tmux new-session -A -s '), `expected tmux prefix, got: ${last}`)
   assert(last.includes(q('slz-sess-1')), 'has tmux session name')
