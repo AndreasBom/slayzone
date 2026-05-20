@@ -8,6 +8,25 @@ function hasTaskIdentity(task: Task | null | undefined): task is Task {
   return !!task && typeof task.id === 'string' && task.id.length > 0
 }
 
+/**
+ * Maps a snake_case `Partial<Task>` patch to the camelCase fields accepted by
+ * `updateTask` / `updateTasks`. Single source of truth for the context-menu
+ * update paths — a field omitted here is silently dropped before it reaches
+ * the DB, so every editable task field must be listed.
+ */
+function toUpdateTaskFields(updates: Partial<Task>) {
+  return {
+    title: updates.title,
+    status: updates.status,
+    priority: updates.priority,
+    progress: updates.progress,
+    projectId: updates.project_id,
+    snoozedUntil: updates.snoozed_until,
+    isBlocked: updates.is_blocked,
+    blockedComment: updates.blocked_comment
+  }
+}
+
 interface UseTasksDataReturn {
   // Data
   tasks: Task[]
@@ -367,13 +386,7 @@ export function useTasksData(): UseTasksDataReturn {
     try {
       await window.api.db.updateTask({
         id: taskId,
-        status: updates.status,
-        priority: updates.priority,
-        progress: updates.progress,
-        projectId: updates.project_id,
-        snoozedUntil: updates.snoozed_until,
-        isBlocked: updates.is_blocked,
-        blockedComment: updates.blocked_comment
+        ...toUpdateTaskFields(updates)
       })
     } catch {
       setTasks(previousTasks)
@@ -410,15 +423,7 @@ export function useTasksData(): UseTasksDataReturn {
     try {
       await window.api.db.updateTasks({
         ids: taskIds,
-        updates: {
-          status: updates.status,
-          priority: updates.priority,
-          progress: updates.progress,
-          projectId: updates.project_id,
-          snoozedUntil: updates.snoozed_until,
-          isBlocked: updates.is_blocked,
-          blockedComment: updates.blocked_comment
-        }
+        updates: toUpdateTaskFields(updates)
       })
     } catch {
       setTasks(previousTasks)

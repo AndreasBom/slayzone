@@ -338,4 +338,40 @@ test.describe('TreeView actions', () => {
       )
       .toEqual({ aArchived: false, cArchived: true })
   })
+
+  test('inline rename persists to DB and survives a data refresh', async ({ mainWindow }) => {
+    const row = taskRow(mainWindow, rootB)
+    await row.scrollIntoViewIfNeeded().catch(() => {})
+
+    // Double-click the title text to enter edit mode.
+    await row.getByText('TA B', { exact: true }).dblclick()
+    const input = row.locator('input[type="text"]')
+    await expect(input).toBeVisible({ timeout: 3_000 })
+
+    // The row is a dnd-sortable <button> that owns this input, and an
+    // unrelated autoFocus button (TerminalStarter) mounting in a background
+    // tab can steal focus shortly after edit mode opens. Drive the whole
+    // rename synchronously in one evaluate so nothing can interleave: set the
+    // value via React's native setter + input event (React flushes the
+    // controlled update for this discrete event before dispatchEvent returns),
+    // then dispatch Enter — onKeyDown now closes over the new value and commits.
+    await input.evaluate((el: HTMLInputElement) => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value'
+      )!.set!
+      setter.call(el, 'TA B renamed')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+
+    // Root cause: the new title must reach the DB, not just optimistic state.
+    await expect
+      .poll(async () => (await getTaskById(mainWindow, rootB))?.title, { timeout: 5_000 })
+      .toBe('TA B renamed')
+
+    // Reported symptom: a refresh reloaded stale rows and reverted the title.
+    await seed(mainWindow).refreshData()
+    await expect(row.getByText('TA B renamed', { exact: true })).toBeVisible({ timeout: 5_000 })
+  })
 })
