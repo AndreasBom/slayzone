@@ -56,8 +56,8 @@ export function ProjectGeneralTab({
   const fetchGitData = useCallback(async () => {
     if (!projectPath) return null
     try {
-      const isRepo = await window.api.git.isGitRepo(projectPath)
-      if (!isRepo) {
+      const probe = await window.api.git.probeRepo(projectId)
+      if (!probe.isGitRepo) {
         const hash = JSON.stringify({ isRepo: false })
         if (hash !== lastHashRef.current) {
           lastHashRef.current = hash
@@ -66,11 +66,13 @@ export function ProjectGeneralTab({
         return hash
       }
       const [branch, status, remote] = await Promise.all([
-        window.api.git.getCurrentBranch(projectPath),
-        window.api.git.getStatusSummary(projectPath),
-        window.api.git.getRemoteUrl(projectPath)
+        window.api.git.getCurrentBranch(projectPath, projectId),
+        window.api.git.getStatusSummary(projectPath, projectId),
+        window.api.git.getRemoteUrl(projectPath, projectId)
       ])
-      const uab = branch ? await window.api.git.getAheadBehindUpstream(projectPath, branch) : null
+      const uab = branch
+        ? await window.api.git.getAheadBehindUpstream(projectPath, branch, projectId)
+        : null
       const hash = JSON.stringify({ isRepo: true, branch, status, remote, uab })
       if (hash !== lastHashRef.current) {
         lastHashRef.current = hash
@@ -84,7 +86,7 @@ export function ProjectGeneralTab({
     } catch {
       return null
     }
-  }, [projectPath])
+  }, [projectPath, projectId])
 
   useStablePoll(fetchGitData, { enabled: visible && !!projectPath, baseDelayMs: 5000 })
 
@@ -94,7 +96,7 @@ export function ProjectGeneralTab({
       setLoadingBranches(true)
       setBranchError(null)
       window.api.git
-        .listBranches(projectPath)
+        .listBranches(projectPath, projectId)
         .then(setBranches)
         .catch(() => setBranches([]))
         .finally(() => setLoadingBranches(false))
@@ -110,7 +112,7 @@ export function ProjectGeneralTab({
     setSwitching(true)
     setBranchError(null)
     try {
-      const hasChanges = await window.api.git.hasUncommittedChanges(projectPath)
+      const hasChanges = await window.api.git.hasUncommittedChanges(projectPath, projectId)
       if (hasChanges) {
         setBranchError('Uncommitted changes — commit or stash first')
         return

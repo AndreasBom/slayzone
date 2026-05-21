@@ -601,6 +601,7 @@ export const UnifiedGitPanel = forwardRef<UnifiedGitPanelHandle, UnifiedGitPanel
               <GitDiffPanel
                 ref={diffRef}
                 task={task ?? null}
+                projectId={projectId}
                 projectPath={projectPath}
                 visible={visible && activeTab === 'changes'}
                 pollIntervalMs={pollIntervalMs}

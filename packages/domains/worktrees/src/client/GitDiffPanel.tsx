@@ -52,6 +52,10 @@ import { useGitDiffSnapshot } from './git-diff-store'
 
 interface GitDiffPanelProps {
   task: Task | null
+  /** Project id — threaded into the diff store so ssh projects route their
+   *  diff fetches through the ssh transport. Falls back to `task?.project_id`
+   *  but defining it explicitly covers project-level views without a task. */
+  projectId?: string
   projectPath: string | null
   visible: boolean
   pollIntervalMs?: number
@@ -231,6 +235,7 @@ export interface GitDiffPanelHandle {
 export const GitDiffPanel = forwardRef<GitDiffPanelHandle, GitDiffPanelProps>(function GitDiffPanel(
   {
     task,
+    projectId,
     projectPath,
     visible,
     pollIntervalMs = 5000,
@@ -240,6 +245,7 @@ export const GitDiffPanel = forwardRef<GitDiffPanelHandle, GitDiffPanelProps>(fu
   },
   ref
 ) {
+  const effectiveProjectId = task?.project_id ?? projectId
   const isMergeMode = mergeState === 'uncommitted'
   const {
     diffContextLines,
@@ -348,7 +354,7 @@ export const GitDiffPanel = forwardRef<GitDiffPanelHandle, GitDiffPanelProps>(fu
     toSha,
     contextLines: diffContextLines,
     pollIntervalMs,
-    projectId: task?.project_id
+    projectId: effectiveProjectId
   })
   const error = commitError ?? fetchError
 
