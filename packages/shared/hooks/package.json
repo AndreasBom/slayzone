@@ -6,6 +6,7 @@
   "exports": {
     "./notify.sh": "./src/notify.sh",
     "./codex-wrapper.sh": "./src/codex-wrapper.sh",
-    "./opencode-plugin.js": "./src/opencode-plugin.js"
+    "./opencode-plugin.js": "./src/opencode-plugin.js",
+    "./slay-proxy.sh": "./src/slay-proxy.sh"
   }
 }

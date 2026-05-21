@@ -40,6 +40,7 @@ import { registerBrowserNewTabRoute } from './browser/new-tab'
 import { registerTabsCreateRoute } from './tabs/create'
 import { registerTabsSplitRoute } from './tabs/split'
 import { registerTabsRenameRoute } from './tabs/rename'
+import { registerCliExecRoute } from './cli/exec'
 
 export type { RestApiDeps } from './types'
 
@@ -49,6 +50,9 @@ export function registerRestApi(app: Express, deps: RestApiDeps): void {
 
   // Agent lifecycle hooks
   registerAgentHookRoute(app, deps)
+
+  // CLI proxy (remote SSH agents loop back through here)
+  registerCliExecRoute(app, deps)
 
   // Processes
   registerProcessesListRoute(app, deps)

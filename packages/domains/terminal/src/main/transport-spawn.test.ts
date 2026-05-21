@@ -138,9 +138,22 @@ test('mcp port adds -R reverse forward + SLAYZONE_MCP_HOST=localhost', () => {
     7331
   )
   assert(r!.args.includes('-R'), 'has -R flag')
-  assert(r!.args.includes('7331:localhost:7331'), 'has port forward arg')
+  // Tunnel target is explicitly 127.0.0.1 (not `localhost`) so Windows OpenSSH
+  // does not race to IPv6 ::1 against the IPv4-only host server.
+  assert(r!.args.includes('7331:127.0.0.1:7331'), 'has port forward arg with explicit IPv4')
   const last = r!.args[r!.args.length - 1]
   assert(last.includes('export SLAYZONE_MCP_HOST=localhost'), 'inner script exports MCP host')
+})
+
+test('inner script prepends ~/.slayzone/bin to PATH so slay-proxy shadows pre-existing slay', () => {
+  const r = buildTransportSpawn({ type: 'ssh', target: 'h' }, '/h', {}, {}, {}, 'sess-pp')
+  const last = r!.args[r!.args.length - 1]
+  // quoteForShell wraps the inner script in double quotes and escapes inner
+  // `"` as `""`, so we assert on the shape that survives wrapping.
+  assert(
+    /export PATH=("|"")\$HOME\/\.slayzone\/bin:\$PATH("|"")/.test(last),
+    `inner script must prepend ~/.slayzone/bin to PATH, got: ${last}`
+  )
 })
 
 test('custom shell honored', () => {

@@ -9,6 +9,7 @@
  *
  * Files written on remote:
  *   ~/.slayzone/hooks/notify.sh    (mode 0755)
+ *   ~/.slayzone/bin/slay           (mode 0755 — CLI proxy to host)
  *   ~/.claude/settings.json        (merged, preserves user-defined entries)
  *
  * Failures bubble up so the caller can decide whether to block the spawn or
@@ -17,6 +18,8 @@
 import { spawn } from 'child_process'
 // @ts-expect-error -- ?raw is a Vite runtime feature, not a typed module.
 import notifyScriptSource from '@slayzone/hooks/notify.sh?raw'
+// @ts-expect-error -- ?raw is a Vite runtime feature, not a typed module.
+import slayProxyScriptSource from '@slayzone/hooks/slay-proxy.sh?raw'
 import { CLAUDE_HOOK_EVENTS, isManagedSlayzoneHook } from './claude-hook-installer'
 
 const MARKER_KEY = '_slayzoneManaged'
@@ -51,15 +54,32 @@ export function setupRemoteAgentHooks(opts: {
 async function doSetup(opts: { sshExecutable: string; target: string }): Promise<void> {
   const { sshExecutable, target } = opts
 
-  // 1. Probe remote $HOME + curl + tmux (sanity check). Single round trip.
-  const probe = await runSsh(sshExecutable, target, [], 'printf "%s\\n" "$HOME"; command -v curl >/dev/null 2>&1 && echo CURL_OK || echo CURL_MISSING')
+  // 1. Probe remote $HOME + curl + jq + tmux (sanity check). Single round trip.
+  // jq is required by slay-proxy.sh for safe argv → JSON encoding.
+  const probe = await runSsh(
+    sshExecutable,
+    target,
+    [],
+    'printf "%s\\n" "$HOME"; ' +
+      'command -v curl >/dev/null 2>&1 && echo CURL_OK || echo CURL_MISSING; ' +
+      'command -v jq >/dev/null 2>&1 && echo JQ_OK || echo JQ_MISSING'
+  )
   const probeLines = probe.trim().split(/\r?\n/)
   const remoteHome = probeLines[0]?.trim()
   const curlStatus = probeLines[1]?.trim()
+  const jqStatus = probeLines[2]?.trim()
   if (!remoteHome) throw new Error(`remote $HOME empty for ${target}`)
   if (curlStatus !== 'CURL_OK') {
     throw new Error(
       `remote ${target} is missing curl — install it (apt install curl / dnf install curl) so notify.sh can post hook events`
+    )
+  }
+  if (jqStatus !== 'JQ_OK') {
+    // Non-fatal for notify.sh, fatal for slay-proxy. We still install
+    // notify.sh and surface a clearer error so the user knows the `slay` CLI
+    // proxy won't work until jq is present.
+    throw new Error(
+      `remote ${target} is missing jq — install it (apt install jq / dnf install jq) so the slay CLI proxy can encode arguments safely`
     )
   }
 
@@ -74,6 +94,20 @@ async function doSetup(opts: { sshExecutable: string; target: string }): Promise
     target,
     'mkdir -p "$HOME/.slayzone/hooks" && cat > "$HOME/.slayzone/hooks/notify.sh" && chmod 0755 "$HOME/.slayzone/hooks/notify.sh"',
     notifyScriptLf
+  )
+
+  // 2b. Write slay CLI proxy with mode 0755. Shadows any pre-existing remote
+  // `slay` once ~/.slayzone/bin is on PATH (handled by transport-spawn).
+  const slayProxyScript =
+    typeof slayProxyScriptSource === 'string'
+      ? slayProxyScriptSource
+      : String(slayProxyScriptSource)
+  const slayProxyScriptLf = slayProxyScript.replace(/\r\n/g, '\n')
+  await runSshStdin(
+    sshExecutable,
+    target,
+    'mkdir -p "$HOME/.slayzone/bin" && cat > "$HOME/.slayzone/bin/slay" && chmod 0755 "$HOME/.slayzone/bin/slay"',
+    slayProxyScriptLf
   )
 
   // 3. Read existing settings.json, merge managed entries, write back.

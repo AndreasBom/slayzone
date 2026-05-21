@@ -110,6 +110,11 @@ export function buildTransportSpawn(
       innerParts.push(`export ${k}=${quoteForShell(v)}`)
     }
     if (mcpPort) innerParts.push(`export SLAYZONE_MCP_HOST=localhost`)
+    // Prepend ~/.slayzone/bin so the slay-proxy script installed by
+    // remote-hook-installer.ts shadows any pre-existing remote `slay` binary.
+    // Agent shells inside this tmux session will route every `slay <cmd>` back
+    // to the host's real CLI via the reverse-forwarded MCP loopback.
+    innerParts.push(`export PATH="$HOME/.slayzone/bin:$PATH"`)
     innerParts.push(`exec ${quoteForShell(remoteShell)} -i -l`)
     const innerScript = innerParts.join(' && ')
 
