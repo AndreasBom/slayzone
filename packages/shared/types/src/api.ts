@@ -976,6 +976,12 @@ export interface ElectronAPI {
   }
   git: {
     isGitRepo: (path: string) => Promise<boolean>
+    probeRepo: (projectId: string) => Promise<{
+      isGitRepo: boolean
+      path: string | null
+      executionContextType: 'host' | 'ssh'
+      error?: string
+    }>
     detectChildRepos: (projectPath: string) => Promise<{ name: string; path: string }[]>
     listProjectRepos: (projectPath: string, opts?: ListProjectReposOpts) => Promise<RepoEntry[]>
     detectWorktrees: (repoPath: string) => Promise<DetectedWorktree[]>

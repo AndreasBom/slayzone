@@ -25,7 +25,9 @@ Companion to [`REMOTE-SSH-SPEC.md`](./REMOTE-SSH-SPEC.md). This document is the 
 | Remote agent-hook installer (`~/.slayzone/hooks/notify.sh` + `~/.claude/settings.json` patch over ssh) — wired into `createPty` via `setRemoteHookInstaller` injection | `d6059eca` | ✅ |
 | Reverse forward target uses `127.0.0.1` instead of `localhost` so Windows OpenSSH does not try `::1` first against an IPv4-only Express server | `d6059eca` | ✅ |
 | **Phase 1 — `slay` CLI proxy on remote** (`/api/cli/exec` endpoint + `slay-proxy.sh` deployed on remote + `~/.slayzone/bin` prepended to remote PATH) | `9d17b4c8` | ✅ |
-| **Phase 2 step 1** — transport-aware git command builder (`runGit`, `buildGitCommand`, `posixQuote`, `resolveProjectExecutionContext`, `resolveSshExecutable`) — no consumer migration yet | uncommitted | 🟡 needs commit |
+| **Phase 2 step 1** — transport-aware git command builder (`runGit`, `buildGitCommand`, `posixQuote`, `resolveProjectExecutionContext`, `resolveSshExecutable`) | `302d0450` | ✅ |
+| **Phase 2 (refactor)** — `execGit` / `execGitFileList` route through `runGit` so optional `executionContext` propagates to every downstream call site without changing them | `44c6634e` | ✅ |
+| **Phase 2 step 3** — `git:probeRepo(projectId)` IPC handler + renderer migration (Git tab no longer says "Not a git repository" for remote SSH projects) | uncommitted | 🟡 needs commit |
 
 ### Uncommitted at time of writing
 

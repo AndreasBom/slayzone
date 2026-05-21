@@ -98,6 +98,7 @@ import {
 } from './git-worktree'
 import { runAiCommand } from './merge-ai'
 import { listProjectRepos } from './list-project-repos'
+import { probeRepo, type ProbeRepoResult } from './probe-repo'
 import { ensureColors } from './color-registry'
 import {
   checkGhInstalled,
@@ -281,6 +282,14 @@ export function registerWorktreeHandlers(ipcMain: IpcMain, db: Database): void {
   // Git operations
   ipcMain.handle('git:isGitRepo', (_, p: string) => {
     return isGitRepo(p)
+  })
+
+  // Transport-aware repo probe — looks up project.execution_context and runs
+  // `git rev-parse --is-inside-work-tree` either locally or over ssh. The
+  // renderer should prefer this over `git:isGitRepo(path)` for project-bound
+  // checks so remote SSH projects no longer show "Not a git repository".
+  ipcMain.handle('git:probeRepo', async (_, projectId: string): Promise<ProbeRepoResult> => {
+    return probeRepo(db, projectId)
   })
 
   const pendingDetections = new Map<string, Promise<{ name: string; path: string }[]>>()

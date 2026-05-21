@@ -143,7 +143,12 @@ export function useConsolidatedGeneralData(
   const fetchGitData = useCallback(async () => {
     if (!projectPath) return null
     try {
-      const isRepo = await window.api.git.isGitRepo(projectPath)
+      // Use probeRepo so remote SSH projects detect their repo against the
+      // *remote* working tree. The legacy isGitRepo(path) stats local fs and
+      // would always return false for an ssh project whose path lives on a
+      // different host.
+      const probe = await window.api.git.probeRepo(task.project_id)
+      const isRepo = probe.isGitRepo
       if (!isRepo) {
         const hash = JSON.stringify({ isRepo: false })
         if (hash !== lastGitHashRef.current) {

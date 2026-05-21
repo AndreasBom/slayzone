@@ -10,6 +10,7 @@ export {
   copyIgnoredFiles,
   getIgnoredFileTree
 } from './git-worktree'
+export { probeRepo, type ProbeRepoResult } from './probe-repo'
 export {
   ensureColors as ensureWorktreeColors,
   getColor as getWorktreeColor,

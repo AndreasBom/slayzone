@@ -769,6 +769,7 @@ const api: ElectronAPI = {
   },
   git: {
     isGitRepo: (path) => ipcRenderer.invoke('git:isGitRepo', path),
+    probeRepo: (projectId) => ipcRenderer.invoke('git:probeRepo', projectId),
     detectChildRepos: (projectPath) => ipcRenderer.invoke('git:detectChildRepos', projectPath),
     listProjectRepos: (projectPath, opts) =>
       ipcRenderer.invoke('git:listProjectRepos', projectPath, opts),
