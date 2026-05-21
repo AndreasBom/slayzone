@@ -30,7 +30,8 @@ Companion to [`REMOTE-SSH-SPEC.md`](./REMOTE-SSH-SPEC.md). This document is the 
 | **Phase 2 step 3** — `git:probeRepo(projectId)` IPC handler + renderer migration (Git tab no longer says "Not a git repository" for remote SSH projects) | `68adf646` | ✅ |
 | **Phase 2 step 2** — thread optional `projectId` through 7 Git-tab read APIs (`getCurrentBranch`, `listBranches`, `hasUncommittedChanges`, `getRecentCommits`, `getStatusSummary`, `getRemoteUrl`, `getAheadBehindUpstream`); handlers resolve `executionContext` from project; `useConsolidatedGeneralData` threads `task.project_id` | `ec27fb53` | ✅ |
 | **Phase 3 (read path)** — `ssh-fs.ts` module with `sshReadDir` + `sshReadFile`; `fs:readDir` / `fs:readFile` IPC accept optional `projectId` and route via ssh when context is ssh; `EditorFileTree` / `FileEditorView` thread `task.project_id`. File-write paths intentionally still host-only | `153ed223` | ✅ |
-| **Phase 5 (probe extension)** — `testExecutionContext` now probes `tmux`, `curl`, `jq`, **and** `git` on the remote in one round-trip, with an apt/dnf install-hint inline so Project Settings → Test Connection gives actionable errors | uncommitted | 🟡 needs commit |
+| **Phase 5 (probe extension)** — `testExecutionContext` now probes `tmux`, `curl`, `jq`, **and** `git` on the remote in one round-trip, with an apt/dnf install-hint inline so Project Settings → Test Connection gives actionable errors | `14add3ab` | ✅ |
+| **Phase 2 (diff path)** — `getWorkingDiff` + `getFileDiff` thread `executionContext`; renderer `git-diff-store` carries `projectId` through `useGitDiffSnapshot`; `git:watch-start` throws cleanly on ssh so the renderer drops to its poll-only fallback (proper inotify-over-ssh deferred) | uncommitted | 🟡 needs commit |
 
 ### Still open in plan after this session
 

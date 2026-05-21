@@ -1017,7 +1017,8 @@ export interface ElectronAPI {
     getConflictedFiles: (path: string) => Promise<string[]>
     getWorkingDiff: (
       path: string,
-      opts?: { contextLines?: string; ignoreWhitespace?: boolean; fromSha?: string; toSha?: string }
+      opts?: { contextLines?: string; ignoreWhitespace?: boolean; fromSha?: string; toSha?: string },
+      projectId?: string
     ) => Promise<GitDiffSnapshot>
     stageFile: (path: string, filePath: string) => Promise<void>
     unstageFile: (path: string, filePath: string) => Promise<void>
@@ -1028,7 +1029,8 @@ export interface ElectronAPI {
       repoPath: string,
       filePath: string,
       staged: boolean,
-      opts?: { contextLines?: string; ignoreWhitespace?: boolean }
+      opts?: { contextLines?: string; ignoreWhitespace?: boolean },
+      projectId?: string
     ) => Promise<string>
     getUntrackedFileDiff: (repoPath: string, filePath: string) => Promise<string>
     getConflictContent: (repoPath: string, filePath: string) => Promise<ConflictFileContent>
@@ -1141,8 +1143,8 @@ export interface ElectronAPI {
     branchFromStash: (repoPath: string, index: number, branchName: string) => Promise<GitSyncResult>
     getStashDiff: (repoPath: string, index: number) => Promise<string>
     // fs watcher for push-based diff invalidation (replaces renderer polling)
-    watchStart: (worktreePath: string) => Promise<void>
-    watchStop: (worktreePath: string) => Promise<void>
+    watchStart: (worktreePath: string, projectId?: string) => Promise<void>
+    watchStop: (worktreePath: string, projectId?: string) => Promise<void>
     onDiffChanged: (cb: (worktreePath: string) => void) => () => void
     onDiffWatchFailed: (cb: (worktreePath: string) => void) => () => void
   }

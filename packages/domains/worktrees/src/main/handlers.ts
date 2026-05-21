@@ -286,11 +286,21 @@ export function registerWorktreeHandlers(ipcMain: IpcMain, db: Database): void {
   // Renderer calls watch-start on mount, watch-stop on unmount. Refcounted
   // per worktreePath in the main process, so multiple windows / panels share
   // one watcher. Throws via IPC on failure → renderer falls back to poll.
-  ipcMain.handle('git:watch-start', (_, worktreePath: string): void => {
+  ipcMain.handle('git:watch-start', (_, worktreePath: string, projectId?: string): void => {
+    // SSH projects: fs.watch can't see remote changes. Resolve as no-op
+    // instead of throwing — renderer interprets that as "no live watcher"
+    // and falls back to its periodic poll cadence. A proper inotify-over-ssh
+    // stream is a follow-up.
+    const ctx = ctxFromProjectId(db, projectId)
+    if (ctx?.type === 'ssh') {
+      throw new Error('git-watcher: ssh transport — renderer should poll')
+    }
     getGitWatcher().subscribe(worktreePath)
   })
 
-  ipcMain.handle('git:watch-stop', (_, worktreePath: string): void => {
+  ipcMain.handle('git:watch-stop', (_, worktreePath: string, projectId?: string): void => {
+    const ctx = ctxFromProjectId(db, projectId)
+    if (ctx?.type === 'ssh') return
     getGitWatcher().unsubscribe(worktreePath)
   })
 
@@ -542,9 +552,15 @@ ${steps.join('\n\n')}`
     (
       _,
       path: string,
-      opts?: { contextLines?: string; ignoreWhitespace?: boolean; fromSha?: string; toSha?: string }
+      opts?: {
+        contextLines?: string
+        ignoreWhitespace?: boolean
+        fromSha?: string
+        toSha?: string
+      },
+      projectId?: string
     ) => {
-      return getWorkingDiff(path, opts)
+      return getWorkingDiff(path, opts, ctxFromProjectId(db, projectId))
     }
   )
 
@@ -575,9 +591,10 @@ ${steps.join('\n\n')}`
       repoPath: string,
       filePath: string,
       staged: boolean,
-      opts?: { contextLines?: string; ignoreWhitespace?: boolean }
+      opts?: { contextLines?: string; ignoreWhitespace?: boolean },
+      projectId?: string
     ) => {
-      return getFileDiff(repoPath, filePath, staged, opts)
+      return getFileDiff(repoPath, filePath, staged, opts, ctxFromProjectId(db, projectId))
     }
   )
 

@@ -884,7 +884,8 @@ export async function getFileDiff(
   repoPath: string,
   filePath: string,
   staged: boolean,
-  opts?: { contextLines?: string; ignoreWhitespace?: boolean }
+  opts?: { contextLines?: string; ignoreWhitespace?: boolean },
+  executionContext?: GitExecutionContext
 ): Promise<string> {
   const extraFlags: string[] = ['--no-ext-diff']
   if (opts?.contextLines === 'all') {
@@ -898,14 +899,15 @@ export async function getFileDiff(
     ? ['diff', '--cached', ...extraFlags, '--', filePath]
     : ['diff', ...extraFlags, '--', filePath]
 
-  return execGit(diffCmd, { cwd: repoPath })
+  return execGit(diffCmd, { cwd: repoPath, executionContext })
 }
 
 export async function getWorkingDiff(
   repoPath: string,
-  opts?: { contextLines?: string; ignoreWhitespace?: boolean; fromSha?: string; toSha?: string }
+  opts?: { contextLines?: string; ignoreWhitespace?: boolean; fromSha?: string; toSha?: string },
+  executionContext?: GitExecutionContext
 ): Promise<GitDiffSnapshot> {
-  await execGit(['rev-parse', '--git-dir'], { cwd: repoPath }).catch(() => {
+  await execGit(['rev-parse', '--git-dir'], { cwd: repoPath, executionContext }).catch(() => {
     throw new Error(`Not a git repository: ${repoPath}`)
   })
 
@@ -926,8 +928,14 @@ export async function getWorkingDiff(
   // staged/unstaged distinction is meaningless across two committed snapshots.
   if (opts?.fromSha && opts?.toSha) {
     const [files, patch] = await Promise.all([
-      execGitFileList(['diff', '--name-only', opts.fromSha, opts.toSha], { cwd: repoPath }),
-      execGit(['diff', '--no-ext-diff', ...extraFlags, opts.fromSha, opts.toSha], { cwd: repoPath })
+      execGitFileList(['diff', '--name-only', opts.fromSha, opts.toSha], {
+        cwd: repoPath,
+        executionContext
+      }),
+      execGit(['diff', '--no-ext-diff', ...extraFlags, opts.fromSha, opts.toSha], {
+        cwd: repoPath,
+        executionContext
+      })
     ])
     return {
       targetPath: repoPath,
@@ -945,11 +953,17 @@ export async function getWorkingDiff(
   // Run independent git queries in parallel
   const [unstagedFiles, stagedFiles, untrackedFiles, unstagedPatch, stagedPatch] =
     await Promise.all([
-      execGitFileList(['diff', '--name-only'], { cwd: repoPath }),
-      execGitFileList(['diff', '--cached', '--name-only'], { cwd: repoPath }),
-      execGitFileList(['ls-files', '--others', '--exclude-standard'], { cwd: repoPath }),
-      execGit(['diff', '--no-ext-diff', ...extraFlags], { cwd: repoPath }),
-      execGit(['diff', '--cached', '--no-ext-diff', ...extraFlags], { cwd: repoPath })
+      execGitFileList(['diff', '--name-only'], { cwd: repoPath, executionContext }),
+      execGitFileList(['diff', '--cached', '--name-only'], { cwd: repoPath, executionContext }),
+      execGitFileList(['ls-files', '--others', '--exclude-standard'], {
+        cwd: repoPath,
+        executionContext
+      }),
+      execGit(['diff', '--no-ext-diff', ...extraFlags], { cwd: repoPath, executionContext }),
+      execGit(['diff', '--cached', '--no-ext-diff', ...extraFlags], {
+        cwd: repoPath,
+        executionContext
+      })
     ])
 
   return {

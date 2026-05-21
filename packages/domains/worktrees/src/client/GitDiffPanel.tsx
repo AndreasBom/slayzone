@@ -347,7 +347,8 @@ export const GitDiffPanel = forwardRef<GitDiffPanelHandle, GitDiffPanelProps>(fu
     fromSha,
     toSha,
     contextLines: diffContextLines,
-    pollIntervalMs
+    pollIntervalMs,
+    projectId: task?.project_id
   })
   const error = commitError ?? fetchError
 

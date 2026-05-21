@@ -801,9 +801,10 @@ const api: ElectronAPI = {
       ipcRenderer.invoke('git:mergeWithAI', projectPath, worktreePath, parentBranch, sourceBranch),
     isMergeInProgress: (path) => ipcRenderer.invoke('git:isMergeInProgress', path),
     getConflictedFiles: (path) => ipcRenderer.invoke('git:getConflictedFiles', path),
-    getWorkingDiff: (path, opts?) => ipcRenderer.invoke('git:getWorkingDiff', path, opts),
-    getFileDiff: (repoPath, filePath, staged, opts?) =>
-      ipcRenderer.invoke('git:getFileDiff', repoPath, filePath, staged, opts),
+    getWorkingDiff: (path, opts?, projectId?) =>
+      ipcRenderer.invoke('git:getWorkingDiff', path, opts, projectId),
+    getFileDiff: (repoPath, filePath, staged, opts?, projectId?) =>
+      ipcRenderer.invoke('git:getFileDiff', repoPath, filePath, staged, opts, projectId),
     stageFile: (path, filePath) => ipcRenderer.invoke('git:stageFile', path, filePath),
     unstageFile: (path, filePath) => ipcRenderer.invoke('git:unstageFile', path, filePath),
     discardFile: (path, filePath, untracked?) =>
@@ -908,8 +909,10 @@ const api: ElectronAPI = {
     branchFromStash: (repoPath, index, branchName) =>
       ipcRenderer.invoke('git:branchFromStash', repoPath, index, branchName),
     getStashDiff: (repoPath, index) => ipcRenderer.invoke('git:getStashDiff', repoPath, index),
-    watchStart: (worktreePath) => ipcRenderer.invoke('git:watch-start', worktreePath),
-    watchStop: (worktreePath) => ipcRenderer.invoke('git:watch-stop', worktreePath),
+    watchStart: (worktreePath, projectId) =>
+      ipcRenderer.invoke('git:watch-start', worktreePath, projectId),
+    watchStop: (worktreePath, projectId) =>
+      ipcRenderer.invoke('git:watch-stop', worktreePath, projectId),
     onDiffChanged: (cb) => {
       const handler = (_: unknown, payload: { worktreePath: string }) => cb(payload.worktreePath)
       ipcRenderer.on('git:diff-changed', handler)

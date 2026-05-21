@@ -37,6 +37,10 @@ export interface GitDiffStoreParams {
   /** Unified-diff context lines to fetch. Default 'all' preserves legacy behavior. */
   contextLines?: GitDiffContextLines
   pollIntervalMs: number
+  /** When set, IPC calls (getWorkingDiff + watchStart/Stop) include the
+   *  projectId so the main process can resolve `execution_context` and route
+   *  the git invocation over ssh for remote projects. */
+  projectId?: string
 }
 
 export interface GitDiffState {
@@ -60,6 +64,9 @@ interface StoreEntry {
   fromSha?: string
   toSha?: string
   contextLines: GitDiffContextLines
+  /** Optional project id — forwarded to the main-process git handlers so ssh
+   *  projects resolve their execution_context. */
+  projectId?: string
   /** Monotonically-incrementing fetch id; lets us drop stale responses after cancel. */
   fetchSeq: number
 }
@@ -194,11 +201,15 @@ async function runFetch(entry: StoreEntry): Promise<void> {
     const range: { fromSha?: string; toSha?: string } = {}
     if (entry.fromSha !== undefined) range.fromSha = entry.fromSha
     if (entry.toSha !== undefined) range.toSha = entry.toSha
-    const next = await window.api.git.getWorkingDiff(entry.targetPath, {
-      contextLines: entry.contextLines,
-      ignoreWhitespace: entry.ignoreWhitespace,
-      ...range
-    })
+    const next = await window.api.git.getWorkingDiff(
+      entry.targetPath,
+      {
+        contextLines: entry.contextLines,
+        ignoreWhitespace: entry.ignoreWhitespace,
+        ...range
+      },
+      entry.projectId
+    )
     // If this entry was torn down or a newer fetch superseded us, drop result.
     if (entries.get(entry.key) !== entry || entry.fetchSeq !== seq) return
     const prev = entry.state.snapshot
@@ -328,7 +339,7 @@ function acquirePathWatcher(targetPath: string, entry: StoreEntry): void {
   }
 
   const capturedState = state
-  capturedState.startPromise = api.git.watchStart(targetPath).then(
+  capturedState.startPromise = api.git.watchStart(targetPath, entry.projectId).then(
     () => {
       // Subscribe may have been torn down while start was in flight.
       if (pathWatchers.get(targetPath) !== capturedState) return
@@ -370,14 +381,14 @@ function releasePathWatcher(targetPath: string, entry: StoreEntry): void {
   const api = typeof window !== 'undefined' ? window.api : undefined
   if (state.watcherActive && api?.git?.watchStop) {
     // Best-effort — we don't await.
-    void api.git.watchStop(targetPath).catch(() => {
+    void api.git.watchStop(targetPath, entry.projectId).catch(() => {
       /* ignore */
     })
   } else if (state.startPromise && api?.git?.watchStop) {
     // Started while we were in flight — stop after start resolves, to keep
     // main-process refcount balanced.
     void state.startPromise.then(() =>
-      api.git.watchStop(targetPath).catch(() => {
+      api.git.watchStop(targetPath, entry.projectId).catch(() => {
         /* ignore */
       })
     )
@@ -393,6 +404,7 @@ interface SubscribeArgs {
   toSha?: string
   contextLines: GitDiffContextLines
   pollIntervalMs: number
+  projectId?: string
 }
 
 function subscribeEntry(args: SubscribeArgs, listener: () => void): () => void {
@@ -418,6 +430,7 @@ function subscribeEntry(args: SubscribeArgs, listener: () => void): () => void {
       fromSha: args.fromSha,
       toSha: args.toSha,
       contextLines: args.contextLines,
+      projectId: args.projectId,
       fetchSeq: 0
     }
     entries.set(key, entry)
@@ -500,7 +513,8 @@ export function useGitDiffSnapshot(
       fromSha: params.fromSha,
       toSha: params.toSha,
       contextLines,
-      pollIntervalMs: params.pollIntervalMs
+      pollIntervalMs: params.pollIntervalMs,
+      projectId: params.projectId
     }
     return (listener: () => void) => subscribeEntry(args, listener)
   }, [
@@ -510,7 +524,8 @@ export function useGitDiffSnapshot(
     params.fromSha,
     params.toSha,
     contextLines,
-    params.pollIntervalMs
+    params.pollIntervalMs,
+    params.projectId
   ])
 
   const getSnapshot = useMemo(() => {
