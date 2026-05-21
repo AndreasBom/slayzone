@@ -858,8 +858,8 @@ const api: ElectronAPI = {
     getWorktreeMetadata: (path) => ipcRenderer.invoke('git:getWorktreeMetadata', path),
     getCommitDag: (path, limit, branches?) =>
       ipcRenderer.invoke('git:getCommitDag', path, limit, branches),
-    getResolvedCommitDag: (path, limit, branches, baseBranch) =>
-      dedupInvoke('git:getResolvedCommitDag', path, limit, branches, baseBranch),
+    getResolvedCommitDag: (path, limit, branches, baseBranch, projectId) =>
+      dedupInvoke('git:getResolvedCommitDag', path, limit, branches, baseBranch, projectId),
     getResolvedForkGraph: (
       targetPath,
       repoPath,

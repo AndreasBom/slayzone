@@ -48,7 +48,8 @@ export function ProjectGeneralTab({
     projectPath,
     visible && isGitRepo === true,
     undefined,
-    `project:${projectId}`
+    `project:${projectId}`,
+    projectId
   )
 
   const lastHashRef = useRef<string>('')

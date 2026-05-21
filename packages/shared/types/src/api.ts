@@ -1087,7 +1087,8 @@ export interface ElectronAPI {
       path: string,
       limit: number,
       branches: string[] | undefined,
-      baseBranch: string
+      baseBranch: string,
+      projectId?: string
     ) => Promise<ResolvedGraph>
     getResolvedForkGraph: (
       targetPath: string,

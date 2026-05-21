@@ -51,7 +51,8 @@ export function GeneralTabContent({
     data.targetPath,
     visible,
     data.parentBranch ?? undefined,
-    `task:${task.id}`
+    `task:${task.id}`,
+    task.project_id
   )
   const [createPrOpen, setCreatePrOpen] = useState(false)
   const [linkPrOpen, setLinkPrOpen] = useState(false)

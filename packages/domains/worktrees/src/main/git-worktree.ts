@@ -1554,7 +1554,8 @@ export async function getDiffStats(repoPath: string, ref: string): Promise<DiffS
 export async function getCommitDag(
   repoPath: string,
   limit: number,
-  branches?: string[]
+  branches?: string[],
+  executionContext?: GitExecutionContext
 ): Promise<DagCommit[]> {
   try {
     const args = [
@@ -1570,7 +1571,7 @@ export async function getCommitDag(
     } else {
       args.push('--all')
     }
-    const output = await execGit(args, { cwd: repoPath })
+    const output = await execGit(args, { cwd: repoPath, executionContext })
     const commits: DagCommit[] = []
     for (const record of output.split('\x00')) {
       const lines = record.trim().split('\n')
@@ -2033,20 +2034,22 @@ export async function getResolvedCommitDag(
   repoPath: string,
   limit: number,
   branches: string[] | undefined,
-  baseBranch: string
+  baseBranch: string,
+  executionContext?: GitExecutionContext
 ): Promise<ResolvedGraph> {
   // Include origin/ tracking refs so diverged remote commits appear in the DAG
   const expandedBranches = branches
     ? [...branches, ...branches.map((b) => `origin/${b}`)]
     : undefined
-  const raw = await getCommitDag(repoPath, limit, expandedBranches)
+  const raw = await getCommitDag(repoPath, limit, expandedBranches, executionContext)
 
   // Detect local-only commits: commits on baseBranch that are NOT ancestors of origin/baseBranch.
   // This requires actual git calls — the DAG alone can't determine this with truncated history.
   let localOnlyHashes: Set<string> | undefined
   try {
     const output = await execGit(['rev-list', baseBranch, '--not', `origin/${baseBranch}`], {
-      cwd: repoPath
+      cwd: repoPath,
+      executionContext
     })
     localOnlyHashes = new Set(output.trim().split('\n').filter(Boolean))
   } catch {

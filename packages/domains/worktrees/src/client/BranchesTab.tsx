@@ -46,7 +46,10 @@ export function useBranchGraph(
   visible: boolean,
   defaultBaseBranch?: string,
   /** Unique key for persisting this instance's display config (e.g. 'task:123', 'project:/path') */
-  configKey?: string
+  configKey?: string,
+  /** Project id — threaded into IPC calls so ssh-context projects fetch their
+   *  branch graph from the remote repo instead of the local host. */
+  projectId?: string
 ): BranchGraphState {
   const [dagGraph, setDagGraph] = useState<ResolvedGraph | null>(null)
   const [filter, setFilter] = useState('')
@@ -115,7 +118,7 @@ export function useBranchGraph(
   const fetchData = useCallback(async () => {
     if (!projectPath) return null
     try {
-      const branch = await window.api.git.getCurrentBranch(projectPath)
+      const branch = await window.api.git.getCurrentBranch(projectPath, projectId)
       const baseBranch = config.baseBranch || defaultBaseBranch || branch || 'main'
 
       const branchSet = new Set<string>([baseBranch])
@@ -130,7 +133,8 @@ export function useBranchGraph(
         projectPath,
         FETCH_LIMIT,
         [...branchSet],
-        baseBranch
+        baseBranch,
+        projectId
       )
       // Hash excludes `relativeDate` — that string updates over time
       // ("3 minutes ago") even when the commit hash is unchanged, which would

@@ -852,8 +852,14 @@ SUMMARY: <2-3 sentences explaining what each branch changed and why they conflic
   ipcMain.handle(
     'git:getResolvedCommitDag',
     withResultDedup(
-      (_, path: string, limit: number, branches: string[] | undefined, baseBranch: string) =>
-        getResolvedCommitDag(path, limit, branches, baseBranch),
+      (
+        _,
+        path: string,
+        limit: number,
+        branches: string[] | undefined,
+        baseBranch: string,
+        projectId?: string
+      ) => getResolvedCommitDag(path, limit, branches, baseBranch, ctxFromProjectId(db, projectId)),
       { hashFn: hashResolvedGraph }
     )
   )
