@@ -164,9 +164,11 @@ export function buildGitCommand(
     context.target,
     remoteCmd
   ]
-  // Pass through local cwd for diagnostic context only — irrelevant for the
-  // remote invocation, which carries its own cwd via `git -C`.
-  return { file: resolveSshExecutable(), args: sshArgs, cwd: opts.cwd }
+  // DO NOT pass opts.cwd through to the local spawn — for ssh transport that
+  // value is a REMOTE path and trying to chdir to it locally fails ENOENT
+  // before ssh ever runs (UV_ENOENT, exit -4058). The remote cwd is conveyed
+  // exclusively via `git -C` inside the wrapped invocation.
+  return { file: resolveSshExecutable(), args: sshArgs, cwd: undefined }
 }
 
 /**
