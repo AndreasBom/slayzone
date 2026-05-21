@@ -116,7 +116,7 @@ export function useFileEditor(
           return
         }
 
-        const result = await window.api.fs.readFile(projectPath, filePath)
+        const result = await window.api.fs.readFile(projectPath, filePath, undefined, projectId)
         if (result.tooLarge || result.content == null) return
         setOpenFiles((prev) =>
           prev.map((f) =>
@@ -272,7 +272,7 @@ export function useFileEditor(
           return
         }
 
-        const result = await window.api.fs.readFile(projectPath, filePath)
+        const result = await window.api.fs.readFile(projectPath, filePath, undefined, projectId)
         if (result.tooLarge) {
           setOpenFiles((prev) => {
             if (prev.some((f) => f.path === filePath)) return prev
