@@ -153,9 +153,11 @@ if (process.platform === 'linux') {
   }
 }
 
-if (isPlaywright && process.env.SLAYZONE_USER_DATA_DIR) {
-  // Playwright runs alongside the user's dev app, so isolate the entire
-  // Electron profile instead of only redirecting the SQLite DB path.
+if (process.env.SLAYZONE_USER_DATA_DIR) {
+  // Honour the override unconditionally. Playwright relies on it to isolate
+  // its E2E profile, and `pnpm dev` users rely on it to run a dev instance
+  // side-by-side with prod without sharing the SQLite DB (concurrent writes
+  // from two Electron mains would corrupt the file).
   mkdirSync(process.env.SLAYZONE_USER_DATA_DIR, { recursive: true })
   app.setPath('userData', process.env.SLAYZONE_USER_DATA_DIR)
 }
