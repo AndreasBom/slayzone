@@ -41,6 +41,7 @@ import type {
 } from '../shared/types'
 import type { MergeContext } from '@slayzone/task/shared'
 import { execAsync, execGit, execGitFileList, trimOutput } from './exec-async'
+import type { GitExecutionContext } from './run-git'
 
 export async function isGitRepo(repoPath: string): Promise<boolean> {
   try {
@@ -682,18 +683,27 @@ export async function initRepo(repoPath: string): Promise<void> {
   await execGit(['init'], { cwd: repoPath })
 }
 
-export async function getCurrentBranch(repoPath: string): Promise<string | null> {
+export async function getCurrentBranch(
+  repoPath: string,
+  executionContext?: GitExecutionContext
+): Promise<string | null> {
   try {
-    const output = await execGit(['branch', '--show-current'], { cwd: repoPath })
+    const output = await execGit(['branch', '--show-current'], { cwd: repoPath, executionContext })
     return output.trim() || null
   } catch {
     return null
   }
 }
 
-export async function listBranches(repoPath: string): Promise<string[]> {
+export async function listBranches(
+  repoPath: string,
+  executionContext?: GitExecutionContext
+): Promise<string[]> {
   try {
-    const output = await execGit(['branch', '--list', '--no-color'], { cwd: repoPath })
+    const output = await execGit(['branch', '--list', '--no-color'], {
+      cwd: repoPath,
+      executionContext
+    })
     return output
       .split('\n')
       .map((line) => line.replace(/^[*+]?\s+/, '').trim())
@@ -711,10 +721,16 @@ export async function createBranch(repoPath: string, branch: string): Promise<vo
   await execGit(['checkout', '-b', branch], { cwd: repoPath })
 }
 
-export async function hasUncommittedChanges(repoPath: string): Promise<boolean> {
+export async function hasUncommittedChanges(
+  repoPath: string,
+  executionContext?: GitExecutionContext
+): Promise<boolean> {
   try {
     // -uno: ignore untracked files — they don't block git merge
-    const output = await execGit(['status', '--porcelain', '-uno'], { cwd: repoPath })
+    const output = await execGit(['status', '--porcelain', '-uno'], {
+      cwd: repoPath,
+      executionContext
+    })
     return output.trim().length > 0
   } catch {
     return false
@@ -998,10 +1014,15 @@ function parseCommitOutput(output: string): CommitInfo[] {
   return commits
 }
 
-export async function getRecentCommits(repoPath: string, count = 5): Promise<CommitInfo[]> {
+export async function getRecentCommits(
+  repoPath: string,
+  count = 5,
+  executionContext?: GitExecutionContext
+): Promise<CommitInfo[]> {
   try {
     const output = await execGit(['log', `-${count}`, '--format=%H%n%h%n%s%n%an%n%ar'], {
-      cwd: repoPath
+      cwd: repoPath,
+      executionContext
     })
     return parseCommitOutput(output)
   } catch {
@@ -1044,9 +1065,12 @@ function parseStatusOutput(output: string): StatusSummary {
   return { staged, unstaged, untracked }
 }
 
-export async function getStatusSummary(repoPath: string): Promise<StatusSummary> {
+export async function getStatusSummary(
+  repoPath: string,
+  executionContext?: GitExecutionContext
+): Promise<StatusSummary> {
   try {
-    const output = await execGit(['status', '--porcelain'], { cwd: repoPath })
+    const output = await execGit(['status', '--porcelain'], { cwd: repoPath, executionContext })
     return parseStatusOutput(output)
   } catch {
     return { staged: 0, unstaged: 0, untracked: 0 }
@@ -1218,9 +1242,12 @@ export async function getMergeContext(repoPath: string): Promise<MergeContext | 
 
 // --- Remote operations ---
 
-export async function getRemoteUrl(repoPath: string): Promise<string | null> {
+export async function getRemoteUrl(
+  repoPath: string,
+  executionContext?: GitExecutionContext
+): Promise<string | null> {
   try {
-    const output = await execGit(['remote', 'get-url', 'origin'], { cwd: repoPath })
+    const output = await execGit(['remote', 'get-url', 'origin'], { cwd: repoPath, executionContext })
     return output.trim() || null
   } catch {
     return null
@@ -1229,12 +1256,13 @@ export async function getRemoteUrl(repoPath: string): Promise<string | null> {
 
 export async function getAheadBehindUpstream(
   repoPath: string,
-  branch: string
+  branch: string,
+  executionContext?: GitExecutionContext
 ): Promise<AheadBehind | null> {
   try {
     const output = await execGit(
       ['rev-list', '--left-right', '--count', `${branch}...${branch}@{upstream}`],
-      { cwd: repoPath }
+      { cwd: repoPath, executionContext }
     )
     const [ahead, behind] = output.trim().split(/\s+/).map(Number)
     return { ahead: ahead || 0, behind: behind || 0 }

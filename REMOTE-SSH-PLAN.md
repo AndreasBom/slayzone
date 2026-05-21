@@ -27,7 +27,8 @@ Companion to [`REMOTE-SSH-SPEC.md`](./REMOTE-SSH-SPEC.md). This document is the 
 | **Phase 1 — `slay` CLI proxy on remote** (`/api/cli/exec` endpoint + `slay-proxy.sh` deployed on remote + `~/.slayzone/bin` prepended to remote PATH) | `9d17b4c8` | ✅ |
 | **Phase 2 step 1** — transport-aware git command builder (`runGit`, `buildGitCommand`, `posixQuote`, `resolveProjectExecutionContext`, `resolveSshExecutable`) | `302d0450` | ✅ |
 | **Phase 2 (refactor)** — `execGit` / `execGitFileList` route through `runGit` so optional `executionContext` propagates to every downstream call site without changing them | `44c6634e` | ✅ |
-| **Phase 2 step 3** — `git:probeRepo(projectId)` IPC handler + renderer migration (Git tab no longer says "Not a git repository" for remote SSH projects) | uncommitted | 🟡 needs commit |
+| **Phase 2 step 3** — `git:probeRepo(projectId)` IPC handler + renderer migration (Git tab no longer says "Not a git repository" for remote SSH projects) | `68adf646` | ✅ |
+| **Phase 2 step 2** — thread optional `projectId` through 7 Git-tab read APIs (`getCurrentBranch`, `listBranches`, `hasUncommittedChanges`, `getRecentCommits`, `getStatusSummary`, `getRemoteUrl`, `getAheadBehindUpstream`); handlers resolve `executionContext` from project; `useConsolidatedGeneralData` threads `task.project_id` | uncommitted | 🟡 needs commit |
 
 ### Uncommitted at time of writing
 

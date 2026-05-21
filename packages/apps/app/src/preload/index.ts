@@ -787,11 +787,13 @@ const api: ElectronAPI = {
     removeWorktree: (repoPath, worktreePath, branchToDelete?) =>
       ipcRenderer.invoke('git:removeWorktree', repoPath, worktreePath, branchToDelete),
     init: (path) => ipcRenderer.invoke('git:init', path),
-    getCurrentBranch: (path) => ipcRenderer.invoke('git:getCurrentBranch', path),
-    listBranches: (path) => ipcRenderer.invoke('git:listBranches', path),
+    getCurrentBranch: (path, projectId) =>
+      ipcRenderer.invoke('git:getCurrentBranch', path, projectId),
+    listBranches: (path, projectId) => ipcRenderer.invoke('git:listBranches', path, projectId),
     checkoutBranch: (path, branch) => ipcRenderer.invoke('git:checkoutBranch', path, branch),
     createBranch: (path, branch) => ipcRenderer.invoke('git:createBranch', path, branch),
-    hasUncommittedChanges: (path) => ipcRenderer.invoke('git:hasUncommittedChanges', path),
+    hasUncommittedChanges: (path, projectId) =>
+      ipcRenderer.invoke('git:hasUncommittedChanges', path, projectId),
     mergeIntoParent: (projectPath, parentBranch, sourceBranch) =>
       ipcRenderer.invoke('git:mergeIntoParent', projectPath, parentBranch, sourceBranch),
     abortMerge: (path) => ipcRenderer.invoke('git:abortMerge', path),
@@ -823,16 +825,17 @@ const api: ElectronAPI = {
     continueRebase: (path) => ipcRenderer.invoke('git:continueRebase', path),
     skipRebaseCommit: (path) => ipcRenderer.invoke('git:skipRebaseCommit', path),
     getMergeContext: (repoPath) => ipcRenderer.invoke('git:getMergeContext', repoPath),
-    getRecentCommits: (repoPath, count) =>
-      ipcRenderer.invoke('git:getRecentCommits', repoPath, count),
+    getRecentCommits: (repoPath, count, projectId) =>
+      ipcRenderer.invoke('git:getRecentCommits', repoPath, count, projectId),
     getAheadBehind: (repoPath, branch, upstream) =>
       ipcRenderer.invoke('git:getAheadBehind', repoPath, branch, upstream),
-    getStatusSummary: (repoPath) => ipcRenderer.invoke('git:getStatusSummary', repoPath),
+    getStatusSummary: (repoPath, projectId) =>
+      ipcRenderer.invoke('git:getStatusSummary', repoPath, projectId),
     revealInFinder: (path) => ipcRenderer.invoke('git:revealInFinder', path),
     isDirty: (path) => ipcRenderer.invoke('git:isDirty', path),
-    getRemoteUrl: (path) => ipcRenderer.invoke('git:getRemoteUrl', path),
-    getAheadBehindUpstream: (path, branch) =>
-      ipcRenderer.invoke('git:getAheadBehindUpstream', path, branch),
+    getRemoteUrl: (path, projectId) => ipcRenderer.invoke('git:getRemoteUrl', path, projectId),
+    getAheadBehindUpstream: (path, branch, projectId) =>
+      ipcRenderer.invoke('git:getAheadBehindUpstream', path, branch, projectId),
     fetch: (path) => ipcRenderer.invoke('git:fetch', path),
     push: (path, branch?, force?) => ipcRenderer.invoke('git:push', path, branch, force),
     pull: (path) => ipcRenderer.invoke('git:pull', path),

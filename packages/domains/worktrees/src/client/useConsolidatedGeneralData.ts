@@ -159,8 +159,8 @@ export function useConsolidatedGeneralData(
       }
 
       const [branch, remote] = await Promise.all([
-        window.api.git.getCurrentBranch(projectPath),
-        window.api.git.getRemoteUrl(projectPath)
+        window.api.git.getCurrentBranch(projectPath, task.project_id),
+        window.api.git.getRemoteUrl(projectPath, task.project_id)
       ])
 
       let status: StatusSummary | null = null
@@ -168,9 +168,9 @@ export function useConsolidatedGeneralData(
       if (targetPath) {
         const activeBranch = hasWorktree ? worktreeBranch : branch
         ;[status, uab] = await Promise.all([
-          window.api.git.getStatusSummary(targetPath),
+          window.api.git.getStatusSummary(targetPath, task.project_id),
           activeBranch
-            ? window.api.git.getAheadBehindUpstream(targetPath, activeBranch)
+            ? window.api.git.getAheadBehindUpstream(targetPath, activeBranch, task.project_id)
             : Promise.resolve(null)
         ])
       }
@@ -591,7 +591,7 @@ export function useConsolidatedGeneralData(
   const handleMergeToParent = useCallback(
     async (deleteWorktree: boolean) => {
       if (!projectPath || !parentBranch || !taskBranch) return
-      const hasChanges = await window.api.git.hasUncommittedChanges(projectPath)
+      const hasChanges = await window.api.git.hasUncommittedChanges(projectPath, task.project_id)
       setMergeToParentDialog({ open: true, hasMainChanges: hasChanges, deleteWorktree })
     },
     [projectPath, parentBranch, taskBranch]

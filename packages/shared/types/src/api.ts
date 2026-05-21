@@ -996,11 +996,11 @@ export interface ElectronAPI {
       branchToDelete?: string
     ) => Promise<{ branchDeleted?: boolean; branchError?: string }>
     init: (path: string) => Promise<void>
-    getCurrentBranch: (path: string) => Promise<string | null>
-    listBranches: (path: string) => Promise<string[]>
+    getCurrentBranch: (path: string, projectId?: string) => Promise<string | null>
+    listBranches: (path: string, projectId?: string) => Promise<string[]>
     checkoutBranch: (path: string, branch: string) => Promise<void>
     createBranch: (path: string, branch: string) => Promise<void>
-    hasUncommittedChanges: (path: string) => Promise<boolean>
+    hasUncommittedChanges: (path: string, projectId?: string) => Promise<boolean>
     mergeIntoParent: (
       projectPath: string,
       parentBranch: string,
@@ -1047,13 +1047,21 @@ export interface ElectronAPI {
     continueRebase: (path: string) => Promise<{ done: boolean; conflictedFiles: string[] }>
     skipRebaseCommit: (path: string) => Promise<{ done: boolean; conflictedFiles: string[] }>
     getMergeContext: (repoPath: string) => Promise<MergeContext | null>
-    getRecentCommits: (repoPath: string, count?: number) => Promise<CommitInfo[]>
+    getRecentCommits: (
+      repoPath: string,
+      count?: number,
+      projectId?: string
+    ) => Promise<CommitInfo[]>
     getAheadBehind: (repoPath: string, branch: string, upstream: string) => Promise<AheadBehind>
-    getStatusSummary: (repoPath: string) => Promise<StatusSummary>
+    getStatusSummary: (repoPath: string, projectId?: string) => Promise<StatusSummary>
     revealInFinder: (path: string) => Promise<void>
     isDirty: (path: string) => Promise<boolean>
-    getRemoteUrl: (path: string) => Promise<string | null>
-    getAheadBehindUpstream: (path: string, branch: string) => Promise<AheadBehind | null>
+    getRemoteUrl: (path: string, projectId?: string) => Promise<string | null>
+    getAheadBehindUpstream: (
+      path: string,
+      branch: string,
+      projectId?: string
+    ) => Promise<AheadBehind | null>
     fetch: (path: string) => Promise<void>
     push: (path: string, branch?: string, force?: boolean) => Promise<GitSyncResult>
     pull: (path: string) => Promise<GitSyncResult>

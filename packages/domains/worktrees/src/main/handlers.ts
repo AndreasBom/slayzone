@@ -99,6 +99,21 @@ import {
 import { runAiCommand } from './merge-ai'
 import { listProjectRepos } from './list-project-repos'
 import { probeRepo, type ProbeRepoResult } from './probe-repo'
+import { resolveProjectExecutionContext, type GitExecutionContext } from './run-git'
+
+/**
+ * Look up the project's execution context once and reuse for the duration of
+ * the IPC call. Handlers that take an optional `projectId` call this so they
+ * can pass the resolved context down to the worktrees-fn layer. Pure helper —
+ * a missing or invalid projectId degrades to host execution.
+ */
+function ctxFromProjectId(
+  db: Database,
+  projectId: string | null | undefined
+): GitExecutionContext {
+  if (!projectId) return null
+  return resolveProjectExecutionContext(db, projectId)
+}
 import { ensureColors } from './color-registry'
 import {
   checkGhInstalled,
@@ -407,12 +422,12 @@ export function registerWorktreeHandlers(ipcMain: IpcMain, db: Database): void {
     return initRepo(path)
   })
 
-  ipcMain.handle('git:getCurrentBranch', (_, path: string) => {
-    return getCurrentBranch(path)
+  ipcMain.handle('git:getCurrentBranch', (_, path: string, projectId?: string) => {
+    return getCurrentBranch(path, ctxFromProjectId(db, projectId))
   })
 
-  ipcMain.handle('git:listBranches', (_, path: string) => {
-    return listBranches(path)
+  ipcMain.handle('git:listBranches', (_, path: string, projectId?: string) => {
+    return listBranches(path, ctxFromProjectId(db, projectId))
   })
 
   ipcMain.handle('git:checkoutBranch', (_, path: string, branch: string) => {
@@ -423,8 +438,8 @@ export function registerWorktreeHandlers(ipcMain: IpcMain, db: Database): void {
     return createBranch(path, branch)
   })
 
-  ipcMain.handle('git:hasUncommittedChanges', (_, path: string) => {
-    return hasUncommittedChanges(path)
+  ipcMain.handle('git:hasUncommittedChanges', (_, path: string, projectId?: string) => {
+    return hasUncommittedChanges(path, ctxFromProjectId(db, projectId))
   })
 
   ipcMain.handle(
@@ -658,16 +673,19 @@ SUMMARY: <2-3 sentences explaining what each branch changed and why they conflic
     return getMergeContext(repoPath)
   })
 
-  ipcMain.handle('git:getRecentCommits', (_, repoPath: string, count?: number) => {
-    return getRecentCommits(repoPath, count)
-  })
+  ipcMain.handle(
+    'git:getRecentCommits',
+    (_, repoPath: string, count?: number, projectId?: string) => {
+      return getRecentCommits(repoPath, count, ctxFromProjectId(db, projectId))
+    }
+  )
 
   ipcMain.handle('git:getAheadBehind', (_, repoPath: string, branch: string, upstream: string) => {
     return getAheadBehind(repoPath, branch, upstream)
   })
 
-  ipcMain.handle('git:getStatusSummary', (_, repoPath: string) => {
-    return getStatusSummary(repoPath)
+  ipcMain.handle('git:getStatusSummary', (_, repoPath: string, projectId?: string) => {
+    return getStatusSummary(repoPath, ctxFromProjectId(db, projectId))
   })
 
   ipcMain.handle('git:revealInFinder', (_, path: string) => {
@@ -681,13 +699,16 @@ SUMMARY: <2-3 sentences explaining what each branch changed and why they conflic
     return summary.staged + summary.unstaged + summary.untracked > 0
   })
 
-  ipcMain.handle('git:getRemoteUrl', (_, path: string) => {
-    return getRemoteUrl(path)
+  ipcMain.handle('git:getRemoteUrl', (_, path: string, projectId?: string) => {
+    return getRemoteUrl(path, ctxFromProjectId(db, projectId))
   })
 
-  ipcMain.handle('git:getAheadBehindUpstream', (_, path: string, branch: string) => {
-    return getAheadBehindUpstream(path, branch)
-  })
+  ipcMain.handle(
+    'git:getAheadBehindUpstream',
+    (_, path: string, branch: string, projectId?: string) => {
+      return getAheadBehindUpstream(path, branch, ctxFromProjectId(db, projectId))
+    }
+  )
 
   ipcMain.handle('git:fetch', (_, path: string) => {
     return gitFetch(path)
