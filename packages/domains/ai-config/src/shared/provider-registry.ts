@@ -6,6 +6,7 @@ export const TERMINAL_MODE_TO_PROVIDER: Partial<Record<string, CliProvider>> = {
   'claude-chat': 'claude',
   codex: 'codex',
   gemini: 'gemini',
+  antigravity: 'antigravity',
   'cursor-agent': 'cursor',
   opencode: 'opencode',
   'qwen-code': 'qwen',
@@ -35,6 +36,10 @@ export const PROVIDER_PATHS: Record<CliProvider, ProviderPathMapping> = {
     skillsDir: '.cursor/skills'
   },
   gemini: {
+    rootInstructions: 'AGENTS.md',
+    skillsDir: '.agents/skills'
+  },
+  antigravity: {
     rootInstructions: 'AGENTS.md',
     skillsDir: '.agents/skills'
   },
@@ -95,6 +100,12 @@ export const COMPUTER_PROVIDER_PATHS: Record<string, ComputerProviderPaths> = {
     instructions: 'GEMINI.md',
     hint: 'Used by Gemini CLI'
   },
+  antigravity: {
+    label: 'Antigravity',
+    baseDir: '.antigravity',
+    instructions: 'AGENTS.md',
+    hint: 'Used by Antigravity CLI'
+  },
   opencode: {
     label: 'OpenCode',
     baseDir: '.config/opencode',
@@ -125,6 +136,7 @@ export const PROVIDER_LABELS: Record<CliProvider, string> = {
   codex: 'Codex',
   cursor: 'Cursor Agent',
   gemini: 'Gemini',
+  antigravity: 'Antigravity',
   opencode: 'OpenCode',
   qwen: 'Qwen Code',
   copilot: 'Copilot'
@@ -141,6 +153,7 @@ export const PROVIDER_CAPABILITIES: Record<CliProvider, ProviderCapabilities> = 
   codex: { configurable: true, mcpReadable: false, mcpWritable: false },
   cursor: { configurable: true, mcpReadable: true, mcpWritable: true },
   gemini: { configurable: true, mcpReadable: true, mcpWritable: false },
+  antigravity: { configurable: true, mcpReadable: false, mcpWritable: false },
   opencode: { configurable: true, mcpReadable: true, mcpWritable: false },
   qwen: { configurable: true, mcpReadable: true, mcpWritable: true },
   copilot: { configurable: true, mcpReadable: true, mcpWritable: false }
@@ -168,6 +181,10 @@ export const MCP_TARGET_CAPABILITIES: Record<McpTarget, McpTargetCapabilities> =
     configurable: PROVIDER_CAPABILITIES.gemini.mcpReadable,
     writable: PROVIDER_CAPABILITIES.gemini.mcpWritable
   },
+  antigravity: {
+    configurable: PROVIDER_CAPABILITIES.antigravity.mcpReadable,
+    writable: PROVIDER_CAPABILITIES.antigravity.mcpWritable
+  },
   opencode: {
     configurable: PROVIDER_CAPABILITIES.opencode.mcpReadable,
     writable: PROVIDER_CAPABILITIES.opencode.mcpWritable
@@ -187,6 +204,7 @@ const MCP_TARGET_ORDER: McpTarget[] = [
   'codex',
   'cursor',
   'gemini',
+  'antigravity',
   'opencode',
   'qwen',
   'copilot'

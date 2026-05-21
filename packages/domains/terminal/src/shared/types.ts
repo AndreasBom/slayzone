@@ -17,6 +17,7 @@ export const BuiltinTerminalMode = {
   ClaudeChat: 'claude-chat',
   Codex: 'codex',
   Gemini: 'gemini',
+  Antigravity: 'antigravity',
   CursorAgent: 'cursor-agent',
   OpenCode: 'opencode',
   QwenCode: 'qwen-code',
@@ -94,6 +95,7 @@ export const DETECTION_ENGINES: DetectionEngine[] = [
   { type: 'claude-code', label: 'Claude Code' },
   { type: 'codex', label: 'Codex' },
   { type: 'gemini', label: 'Gemini' },
+  { type: 'antigravity', label: 'Antigravity' },
   { type: 'cursor-agent', label: 'Cursor' },
   { type: 'opencode', label: 'OpenCode' },
   { type: 'qwen-code', label: 'Qwen Code' },
@@ -148,6 +150,31 @@ export const DEFAULT_TERMINAL_MODES: TerminalModeInfo[] = [
     enabled: true,
     isBuiltin: true,
     order: 2
+  },
+  {
+    // Antigravity CLI — Google's successor to Gemini CLI (Gemini CLI stops
+    // serving free/Pro/Ultra requests 2026-06-18). Binary is `agy`. Commands
+    // confirmed against `agy --help` (v1.0.0):
+    //   resume     `agy --conversation=<id>`              (short `-c` = most-recent)
+    //   headless   `-p` / `--print`                      (single non-interactive prompt)
+    //   auto-approve `--dangerously-skip-permissions`     (skip tool permission prompts)
+    //
+    // `resumeCommand` uses `{id}`: the SessionStart hook captures the CLI
+    // session_id into provider_config.antigravity (see agent-hook.ts
+    // `persistConversationId`), and `{id}` is only ever interpolated when a
+    // captured id exists — pty-manager picks `resumeCommand` solely when
+    // `resuming = !!existingConversationId`. No id → `initialCommand` (fresh
+    // session).
+    id: BuiltinTerminalMode.Antigravity,
+    label: 'Antigravity',
+    type: 'antigravity',
+    initialCommand: 'agy {flags}',
+    resumeCommand: 'agy --conversation={id} {flags}',
+    headlessCommand: 'agy -p {prompt} {flags}',
+    defaultFlags: '--dangerously-skip-permissions',
+    enabled: true,
+    isBuiltin: true,
+    order: 2.5
   },
   {
     id: BuiltinTerminalMode.CursorAgent,

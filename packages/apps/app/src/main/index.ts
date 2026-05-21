@@ -1566,17 +1566,43 @@ app
     if (!process.env.PLAYWRIGHT || process.env.SLAYZONE_E2E_INSTALL_HOOKS === '1') {
       setImmediate(async () => {
         try {
+          // Defense-in-depth: under Playwright every hook installer must write
+          // to a sandboxed path supplied by the e2e fixture. If a sandbox env
+          // var is missing, the installer's `get*Path()` falls back to the dev
+          // user's REAL home (~/.claude, ~/.antigravity, …) and silently
+          // pollutes it. Fail loud + skip ALL installs rather than do that.
+          // (Regression guard — a missing `SLAYZONE_ANTIGRAVITY_HOOKS_PATH`
+          // once leaked SlayZone hooks into the real ~/.antigravity/hooks.json.)
+          if (process.env.PLAYWRIGHT) {
+            const sandboxVars = [
+              'SLAYZONE_HOME_DIR',
+              'SLAYZONE_CLAUDE_SETTINGS_PATH',
+              'SLAYZONE_CODEX_HOOKS_PATH',
+              'SLAYZONE_GEMINI_SETTINGS_PATH',
+              'SLAYZONE_ANTIGRAVITY_HOOKS_PATH',
+              'SLAYZONE_OPENCODE_PLUGIN_PATH'
+            ]
+            const missing = sandboxVars.filter((v) => !process.env[v])
+            if (missing.length > 0) {
+              console.error(
+                `[agent-hooks] refusing to install under PLAYWRIGHT — unsandboxed paths (missing: ${missing.join(', ')})`
+              )
+              return
+            }
+          }
           const [
             { installNotifyScript },
             { installClaudeHooks },
             { installCodexHooks, uninstallCodexWrapper },
             { installGeminiHooks },
+            { installAntigravityHooks },
             { installOpencodePlugin }
           ] = await Promise.all([
             import('./agent-hooks/notify-script-installer'),
             import('./agent-hooks/claude-hook-installer'),
             import('./agent-hooks/codex-hook-installer'),
             import('./agent-hooks/gemini-hook-installer'),
+            import('./agent-hooks/antigravity-hook-installer'),
             import('./agent-hooks/opencode-plugin-installer')
           ])
           const { path: scriptPath } = await installNotifyScript()
@@ -1585,6 +1611,7 @@ app
           // Remove the legacy ~/.slayzone/bin/codex bash wrapper from prior installs.
           await uninstallCodexWrapper()
           await installGeminiHooks({ scriptPath })
+          await installAntigravityHooks({ scriptPath })
           await installOpencodePlugin({ notifyPath: scriptPath })
           logBoot('agent hooks installed')
         } catch (err) {

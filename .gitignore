@@ -42,3 +42,6 @@ playwright-report/
 working-notes/performance/**/*.json
 
 working-notes/performance/*.json
+
+# Antigravity CLI local runtime symlinks
+.antigravitycli/

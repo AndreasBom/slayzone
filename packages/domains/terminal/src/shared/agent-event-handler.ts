@@ -8,7 +8,7 @@
  * `agent:lifecycle` IPC channel.
  */
 
-export type AgentId = 'claude-code' | 'codex' | 'gemini' | 'opencode'
+export type AgentId = 'claude-code' | 'codex' | 'gemini' | 'antigravity' | 'opencode'
 
 /**
  * Runtime allowlist for agents that currently emit hook lifecycle events.
@@ -19,6 +19,7 @@ export const HOOK_SUPPORTED_AGENT_IDS: ReadonlySet<AgentId> = new Set<AgentId>([
   'claude-code',
   'codex',
   'gemini',
+  'antigravity',
   'opencode'
 ])
 
@@ -92,7 +93,11 @@ const ALIAS_TABLE: Record<string, AgentLifecycleEventType> = {
   prerequest: 'agent-start',
   pre_request: 'agent-start',
   postrequest: 'agent-stop',
-  post_request: 'agent-stop'
+  post_request: 'agent-stop',
+  // Antigravity CLI (`agy`) — model-invocation lifecycle events. `pretooluse`/
+  // `posttooluse`/`stop` already mapped above under the Claude block.
+  preinvocation: 'agent-start',
+  postinvocation: 'agent-stop'
 }
 
 /**

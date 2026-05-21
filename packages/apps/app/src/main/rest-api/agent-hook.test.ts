@@ -28,14 +28,28 @@ vi.mock('@slayzone/diagnostics/main', () => ({
   recordDiagnosticEvent: () => {}
 }))
 
+// The codex conversation-id capture reads via `getTaskOp` and writes via the
+// pure `updateTask`. Mock both so the test never pulls the task domain (+
+// Electron) into vitest. `getProviderConversationId` (@slayzone/task/shared) is
+// a pure helper — left unmocked so the real short-circuit logic is exercised.
+const updateTaskSpy = vi.fn()
+const getTaskOpSpy = vi.fn<(db: unknown, id: string) => Promise<unknown>>()
+vi.mock('@slayzone/task/main', () => ({
+  updateTask: (...args: unknown[]) => updateTaskSpy(...args),
+  getTaskOp: (db: unknown, id: string) => getTaskOpSpy(db, id)
+}))
+
 interface ServerHandle {
   port: number
   close(): Promise<void>
 }
 
-function startServer(): Promise<ServerHandle> {
+function startServer(deps?: { notifyRenderer?: () => void }): Promise<ServerHandle> {
   const app = express()
-  registerAgentHookRoute(app, { db: {} as never, notifyRenderer: () => {} })
+  registerAgentHookRoute(app, {
+    db: {} as never,
+    notifyRenderer: deps?.notifyRenderer ?? (() => {})
+  })
   return new Promise((resolve) => {
     const server = http.createServer(app).listen(0, '127.0.0.1', () => {
       const addr = server.address()
@@ -85,9 +99,13 @@ describe('POST /api/agent-hook', () => {
     findSessionSpy.mockReset()
     transitionSpy.mockReset()
     markActiveSpy.mockReset()
+    updateTaskSpy.mockReset()
+    getTaskOpSpy.mockReset()
     findSessionSpy.mockReturnValue(null)
     transitionSpy.mockReturnValue(true)
     markActiveSpy.mockReturnValue(true)
+    // Default: task exists with no codex conversation id yet.
+    getTaskOpSpy.mockResolvedValue({ provider_config: {} })
   })
 
   test('valid payload → 200 + broadcasts agent:lifecycle', async () => {
@@ -436,6 +454,295 @@ describe('POST /api/agent-hook', () => {
       expect(transitionSpy).not.toHaveBeenCalled()
       expect(markActiveSpy).toHaveBeenCalledWith('cx-5')
       expect(markActiveSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  // --- Codex conversation-id capture (PRIMARY codex resume-id path) ---------
+
+  test('codex SessionStart with sessionId → persists conversationId to provider_config', async () => {
+    const notifyRendererSpy = vi.fn()
+    const srv = await startServer({ notifyRenderer: notifyRendererSpy })
+    try {
+      await postJson(srv.port, {
+        agentId: 'codex',
+        hookEvent: 'SessionStart',
+        taskId: 'cx-task',
+        sessionId: '11111111-1111-4111-8111-111111111111'
+      })
+      expect(getTaskOpSpy).toHaveBeenCalledWith(expect.anything(), 'cx-task')
+      expect(updateTaskSpy).toHaveBeenCalledTimes(1)
+      const data = updateTaskSpy.mock.calls[0][1]
+      expect(data).toEqual({
+        id: 'cx-task',
+        providerConfig: { codex: { conversationId: '11111111-1111-4111-8111-111111111111' } }
+      })
+      expect(notifyRendererSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('codex SessionStart with only raw.session_id → still persists (envelope fallback)', async () => {
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'codex',
+        hookEvent: 'SessionStart',
+        taskId: 'cx-task',
+        raw: { session_id: '22222222-2222-4222-8222-222222222222' }
+      })
+      expect(updateTaskSpy).toHaveBeenCalledTimes(1)
+      const data = updateTaskSpy.mock.calls[0][1] as {
+        providerConfig: { codex: { conversationId: string } }
+      }
+      expect(data.providerConfig.codex.conversationId).toBe(
+        '22222222-2222-4222-8222-222222222222'
+      )
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('codex SessionStart without any session id → no persist', async () => {
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, { agentId: 'codex', hookEvent: 'SessionStart', taskId: 'cx-task' })
+      expect(getTaskOpSpy).not.toHaveBeenCalled()
+      expect(updateTaskSpy).not.toHaveBeenCalled()
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('codex SessionStart where stored id already matches → no write (short-circuit)', async () => {
+    getTaskOpSpy.mockResolvedValue({
+      provider_config: { codex: { conversationId: '33333333-3333-4333-8333-333333333333' } }
+    })
+    const notifyRendererSpy = vi.fn()
+    const srv = await startServer({ notifyRenderer: notifyRendererSpy })
+    try {
+      await postJson(srv.port, {
+        agentId: 'codex',
+        hookEvent: 'SessionStart',
+        taskId: 'cx-task',
+        sessionId: '33333333-3333-4333-8333-333333333333'
+      })
+      expect(getTaskOpSpy).toHaveBeenCalledTimes(1)
+      expect(updateTaskSpy).not.toHaveBeenCalled()
+      expect(notifyRendererSpy).not.toHaveBeenCalled()
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('codex SessionStart for a missing task row → no write, no throw (200)', async () => {
+    getTaskOpSpy.mockResolvedValue(null)
+    const srv = await startServer()
+    try {
+      const res = await postJson(srv.port, {
+        agentId: 'codex',
+        hookEvent: 'SessionStart',
+        taskId: 'cx-missing',
+        sessionId: '44444444-4444-4444-8444-444444444444'
+      })
+      expect(res.status).toBe(200)
+      expect(updateTaskSpy).not.toHaveBeenCalled()
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('codex SessionStart with sessionId but no taskId → no persist', async () => {
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'codex',
+        hookEvent: 'SessionStart',
+        sessionId: '55555555-5555-4555-8555-555555555555'
+      })
+      expect(getTaskOpSpy).not.toHaveBeenCalled()
+      expect(updateTaskSpy).not.toHaveBeenCalled()
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('claude-code SessionStart with sessionId → no persist (not in capture allowlist)', async () => {
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'claude-code',
+        hookEvent: 'SessionStart',
+        taskId: 'cc-task',
+        sessionId: '66666666-6666-4666-8666-666666666666'
+      })
+      expect(getTaskOpSpy).not.toHaveBeenCalled()
+      expect(updateTaskSpy).not.toHaveBeenCalled()
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('codex Stop with sessionId → no persist (SessionStart-only capture)', async () => {
+    findSessionSpy.mockReturnValue('cx-stop')
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'codex',
+        hookEvent: 'Stop',
+        taskId: 'cx-task',
+        sessionId: '77777777-7777-4777-8777-777777777777'
+      })
+      expect(getTaskOpSpy).not.toHaveBeenCalled()
+      expect(updateTaskSpy).not.toHaveBeenCalled()
+    } finally {
+      await srv.close()
+    }
+  })
+
+  // --- Antigravity conversation-id capture (PreInvocation event, conversationId) ---
+
+  test('antigravity PreInvocation with sessionId → persists conversationId to provider_config', async () => {
+    const notifyRendererSpy = vi.fn()
+    const srv = await startServer({ notifyRenderer: notifyRendererSpy })
+    try {
+      await postJson(srv.port, {
+        agentId: 'antigravity',
+        hookEvent: 'PreInvocation',
+        taskId: 'ag-task',
+        sessionId: 'a1111111-1111-4111-8111-111111111111'
+      })
+      expect(getTaskOpSpy).toHaveBeenCalledWith(expect.anything(), 'ag-task')
+      expect(updateTaskSpy).toHaveBeenCalledTimes(1)
+      const data = updateTaskSpy.mock.calls[0][1]
+      expect(data).toEqual({
+        id: 'ag-task',
+        providerConfig: { antigravity: { conversationId: 'a1111111-1111-4111-8111-111111111111' } }
+      })
+      expect(notifyRendererSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('antigravity PreInvocation with only raw.conversationId → still persists (envelope fallback)', async () => {
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'antigravity',
+        hookEvent: 'PreInvocation',
+        taskId: 'ag-task',
+        raw: { conversationId: 'a2222222-2222-4222-8222-222222222222' }
+      })
+      expect(updateTaskSpy).toHaveBeenCalledTimes(1)
+      const data = updateTaskSpy.mock.calls[0][1] as {
+        providerConfig: { antigravity: { conversationId: string } }
+      }
+      expect(data.providerConfig.antigravity.conversationId).toBe(
+        'a2222222-2222-4222-8222-222222222222'
+      )
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('antigravity PreInvocation without any session id → no persist', async () => {
+    findSessionSpy.mockReturnValue('ag-noid')
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'antigravity',
+        hookEvent: 'PreInvocation',
+        taskId: 'ag-task'
+      })
+      expect(getTaskOpSpy).not.toHaveBeenCalled()
+      expect(updateTaskSpy).not.toHaveBeenCalled()
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('antigravity PreInvocation where stored id already matches → no write (short-circuit)', async () => {
+    getTaskOpSpy.mockResolvedValue({
+      provider_config: { antigravity: { conversationId: 'a3333333-3333-4333-8333-333333333333' } }
+    })
+    const notifyRendererSpy = vi.fn()
+    const srv = await startServer({ notifyRenderer: notifyRendererSpy })
+    try {
+      await postJson(srv.port, {
+        agentId: 'antigravity',
+        hookEvent: 'PreInvocation',
+        taskId: 'ag-task',
+        sessionId: 'a3333333-3333-4333-8333-333333333333'
+      })
+      expect(getTaskOpSpy).toHaveBeenCalledTimes(1)
+      expect(updateTaskSpy).not.toHaveBeenCalled()
+      expect(notifyRendererSpy).not.toHaveBeenCalled()
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('antigravity Stop with sessionId → no persist (PreInvocation-only capture)', async () => {
+    findSessionSpy.mockReturnValue('ag-stop')
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'antigravity',
+        hookEvent: 'Stop',
+        taskId: 'ag-task',
+        sessionId: 'a4444444-4444-4444-8444-444444444444'
+      })
+      expect(getTaskOpSpy).not.toHaveBeenCalled()
+      expect(updateTaskSpy).not.toHaveBeenCalled()
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('antigravity PreInvocation → transition running', async () => {
+    findSessionSpy.mockReturnValue('ag-run')
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'antigravity',
+        hookEvent: 'PreInvocation',
+        taskId: 'ag-run'
+      })
+      expect(transitionSpy).toHaveBeenCalledWith('ag-run', 'running', 'PreInvocation')
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('antigravity Stop → transition idle', async () => {
+    findSessionSpy.mockReturnValue('ag-idle')
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'antigravity',
+        hookEvent: 'Stop',
+        taskId: 'ag-idle'
+      })
+      expect(transitionSpy).toHaveBeenCalledWith('ag-idle', 'idle', 'Stop')
+    } finally {
+      await srv.close()
+    }
+  })
+
+  test('antigravity PostToolUse → markActive only, no transition', async () => {
+    findSessionSpy.mockReturnValue('ag-mid')
+    const srv = await startServer()
+    try {
+      await postJson(srv.port, {
+        agentId: 'antigravity',
+        hookEvent: 'PostToolUse',
+        taskId: 'ag-mid'
+      })
+      expect(transitionSpy).not.toHaveBeenCalled()
+      expect(markActiveSpy).toHaveBeenCalledWith('ag-mid')
     } finally {
       await srv.close()
     }

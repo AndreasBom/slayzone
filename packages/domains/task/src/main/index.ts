@@ -5,6 +5,7 @@ export {
   createTaskOp,
   createImportedTaskOp,
   deleteTaskOp,
+  getTaskOp,
   restoreTaskOp,
   unarchiveTaskOp,
   updateTaskOp

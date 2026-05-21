@@ -8,6 +8,8 @@ import {
   transitionStateFromHook,
   markSessionActiveFromHook
 } from '@slayzone/terminal/main'
+import { updateTask, getTaskOp } from '@slayzone/task/main'
+import { getProviderConversationId } from '@slayzone/task/shared'
 import { recordDiagnosticEvent } from '@slayzone/diagnostics/main'
 import { broadcastToWindows } from '../broadcast-to-windows'
 import type { RestApiDeps } from './types'
@@ -105,10 +107,50 @@ function codexHookToTerminalState(hookEvent: string): TerminalState | null {
 
 /**
  * Agents whose PTY state machine is driven by hook signals instead of adapter
- * output detection. Claude Code and Codex both have reliable native lifecycle
- * hooks; gemini/opencode still rely on adapter detection.
+ * output detection. Claude Code, Codex and Antigravity all have reliable native
+ * lifecycle hooks; gemini/opencode still rely on adapter detection.
  */
-const HOOK_DRIVEN_AGENTS: ReadonlySet<string> = new Set(['claude-code', 'codex'])
+const HOOK_DRIVEN_AGENTS: ReadonlySet<string> = new Set([
+  'claude-code',
+  'codex',
+  'antigravity'
+])
+
+/**
+ * Antigravity (`agy`) raw hook event → TerminalState. `agy` has no per-turn
+ * UserPromptSubmit; the model-invocation events bracket a turn:
+ *
+ *   PreInvocation → 'running'  (model call about to start)
+ *   Stop          → 'idle'     (execution loop terminated)
+ *   PostToolUse / PostInvocation → null  (mid-turn; markActive refreshes clock)
+ */
+function antigravityHookToTerminalState(hookEvent: string): TerminalState | null {
+  switch (hookEvent) {
+    case 'PreInvocation':
+      return 'running'
+    case 'Stop':
+      return 'idle'
+    default:
+      return null
+  }
+}
+
+/**
+ * Agents whose hook payload carries a resumable CLI session id, mapped to the
+ * hook event that delivers it. Persisted to
+ * `provider_config[agentId].conversationId` for deterministic resume-by-id.
+ *
+ * - `codex`: `SessionStart` fires once per session, carries `session_id`.
+ * - `antigravity`: every `agy` hook payload carries `conversationId`; we capture
+ *   on `PreInvocation` (turn start). Repeats short-circuit in `persistConversationId`.
+ *
+ * Claude Code is absent — it mints its own id at creation (`claude --session-id
+ * {id}`), so there is nothing to capture from a hook.
+ */
+const CONVERSATION_ID_CAPTURE_EVENT: Record<string, string> = {
+  codex: 'SessionStart',
+  antigravity: 'PreInvocation'
+}
 
 /** Dispatch to the per-agent raw-hook-event → TerminalState mapper. */
 function hookToTerminalState(
@@ -116,9 +158,9 @@ function hookToTerminalState(
   hookEvent: string,
   raw?: unknown
 ): TerminalState | null {
-  return agentId === 'codex'
-    ? codexHookToTerminalState(hookEvent)
-    : claudeCodeHookToTerminalState(hookEvent, raw)
+  if (agentId === 'codex') return codexHookToTerminalState(hookEvent)
+  if (agentId === 'antigravity') return antigravityHookToTerminalState(hookEvent)
+  return claudeCodeHookToTerminalState(hookEvent, raw)
 }
 
 /** Stringify + clamp for diagnostic storage. Keeps raw hook payloads from
@@ -137,13 +179,61 @@ function truncateForDiag(value: unknown, maxChars: number): string {
 }
 
 const PayloadSchema = z.object({
-  agentId: z.enum(['claude-code', 'codex', 'gemini', 'opencode']),
+  agentId: z.enum(['claude-code', 'codex', 'gemini', 'antigravity', 'opencode']),
   hookEvent: z.string().min(1),
+  /** The agent CLI's own session id (a UUID forwarded by notify.sh from the
+   *  hook payload's `session_id`) — NOT the SlayZone PTY session id. */
   sessionId: z.string().optional(),
   taskId: z.string().optional(),
   cwd: z.string().optional(),
   raw: z.unknown().optional()
 })
+
+/**
+ * Persist a CLI's session_id (carried by its `SessionStart` hook) to the task's
+ * `provider_config[agentId].conversationId` so the session can be resumed
+ * deterministically by id.
+ *
+ * Applies to the agents in `CONVERSATION_ID_CAPTURE_AGENTS` (codex, antigravity)
+ * — their SessionStart hook carries the id directly. Codex additionally has
+ * `/status` + disk-scan detection (`codex-adapter.ts`) as untouched fallbacks.
+ *
+ * The CLI session_id is a UUID — distinct from the SlayZone PTY session id
+ * resolved via `bridge.findSession`. `agentId` doubles as the `provider_config`
+ * key — for the capture agents the `AgentId` string equals the `TerminalMode`.
+ *
+ * Reads through the task domain (`getTaskOp` + `getProviderConversationId`)
+ * rather than raw SQL so the `provider_config` schema stays owned by that
+ * domain. Uses the pure `updateTask` (not `updateTaskOp`) deliberately:
+ * `updateTaskOp` emits `db:tasks:update:done`, which triggers a GitHub/Linear
+ * push — wrong for a machine-written conversation id. `notifyRenderer()` still
+ * refreshes the renderer via `tasks:changed`. The per-mode deep-merge inside
+ * `updateTask` preserves existing `flags`/`lastPtyKilledAt`. Always overwrites:
+ * the CLI mints a fresh id on resume, so the latest id is always the right one.
+ *
+ * Best-effort — on any failure the adapter detection fallbacks still capture
+ * the id.
+ */
+async function persistConversationId(
+  deps: RestApiDeps,
+  agentId: string,
+  taskId: string,
+  sessionId: string
+): Promise<void> {
+  try {
+    const task = await getTaskOp(deps.db, taskId)
+    if (!task) return
+    // Already current — skip the redundant write + tasks:changed broadcast.
+    if (getProviderConversationId(task.provider_config, agentId) === sessionId) return
+    updateTask(deps.db, {
+      id: taskId,
+      providerConfig: { [agentId]: { conversationId: sessionId } }
+    })
+    deps.notifyRenderer()
+  } catch {
+    // Best-effort — adapter `/status` + disk-scan fallbacks still cover capture.
+  }
+}
 
 /**
  * Receives agent lifecycle pings from the bundled `notify.sh` hook script.
@@ -152,18 +242,20 @@ const PayloadSchema = z.object({
  * is renderer-side status updates and a future chime — matches Superset.
  *
  * Hot path: hooks fire 5-20× per turn (PreToolUse + PostToolUse per tool).
- * Must stay cheap. No DB writes here. Broadcast no-ops automatically when
- * no renderer is open (BrowserWindow.getAllWindows() returns []).
+ * Must stay cheap. The ONLY DB write is the once-per-session `SessionStart`
+ * conversation-id capture for codex/antigravity (see `persistConversationId`) —
+ * gated so it never touches the per-tool hot path. Broadcast no-ops
+ * automatically when no renderer is open (BrowserWindow.getAllWindows() = []).
  */
 export function registerAgentHookRoute(
   app: Express,
-  _deps: RestApiDeps,
+  deps: RestApiDeps,
   bridge: TerminalStateBridge = defaultBridge
 ): void {
   // Bumped from default 100kb — SessionStart payloads can carry the full tool list.
   const jsonParser = express.json({ limit: '1mb' })
 
-  app.post('/api/agent-hook', jsonParser, (req, res) => {
+  app.post('/api/agent-hook', jsonParser, async (req, res) => {
     const parsed = PayloadSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json({ ok: false, error: parsed.error.message })
@@ -181,6 +273,32 @@ export function registerAgentHookRoute(
       timestamp: Date.now()
     }
     broadcastToWindows('agent:lifecycle', event)
+
+    // PRIMARY resume-id capture — persist the CLI session id into
+    // provider_config[agentId].conversationId for the capture agents. Gated to
+    // one event per agent (see CONVERSATION_ID_CAPTURE_EVENT) so this stays off
+    // the per-tool hot path. `raw.session_id` / `raw.conversationId` are
+    // fallbacks if the notify.sh envelope ever omits the top-level `sessionId`.
+    if (
+      CONVERSATION_ID_CAPTURE_EVENT[parsed.data.agentId] === parsed.data.hookEvent
+    ) {
+      const rawIds = parsed.data.raw as
+        | { session_id?: string; conversationId?: string }
+        | undefined
+      const cliSessionId =
+        parsed.data.sessionId ?? rawIds?.session_id ?? rawIds?.conversationId
+      if (parsed.data.taskId && cliSessionId) {
+        // Awaited: a single indexed SELECT + UPDATE on local SQLite is sub-ms,
+        // and the capture event is low-frequency (repeats short-circuit in the
+        // helper) — keeping it deterministic beats a fire-and-forget race.
+        await persistConversationId(
+          deps,
+          parsed.data.agentId,
+          parsed.data.taskId,
+          cliSessionId
+        )
+      }
+    }
 
     // Drive the PTY state machine from the hook signal — the source of truth
     // for hook-driven agents (replaces adapter output detection / bullet-glyph

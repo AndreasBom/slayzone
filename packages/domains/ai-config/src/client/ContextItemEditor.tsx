@@ -63,6 +63,7 @@ const PROVIDER_ROW_ORDER: CliProvider[] = [
   'codex',
   'cursor',
   'gemini',
+  'antigravity',
   'opencode',
   'qwen',
   'copilot'

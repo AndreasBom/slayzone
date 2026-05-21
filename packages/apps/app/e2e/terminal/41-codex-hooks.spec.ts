@@ -1,4 +1,4 @@
-import { test, expect, resetApp } from '../fixtures/electron'
+import { test, expect, resetApp, seed, TEST_PROJECT_PATH } from '../fixtures/electron'
 import fs from 'fs'
 import { spawnSync } from 'child_process'
 
@@ -155,6 +155,68 @@ test.describe('Codex agent hooks', () => {
         | undefined
       unsub?.()
     })
+  })
+
+  test('SessionStart stdin payload persists session_id to provider_config.codex.conversationId', async ({
+    mainWindow
+  }) => {
+    const port = (await mainWindow.evaluate(() => {
+      // @ts-expect-error -- test bridge
+      return window.__testInvoke('e2e:get-mcp-port', [])
+    })) as number | null
+    expect(port).toBeTruthy()
+    if (!port) return
+
+    const env = (await mainWindow.evaluate(() => {
+      // @ts-expect-error -- test bridge
+      return window.__testInvoke('e2e:get-env', ['SLAYZONE_HOME_DIR'])
+    })) as Record<string, string>
+    const scriptPath = `${env.SLAYZONE_HOME_DIR}/hooks/notify.sh`
+    await waitForFile(scriptPath, 5000)
+
+    // A real task row must exist — the server reads provider_config by task id.
+    const s = seed(mainWindow)
+    const project = await s.createProject({
+      name: 'Codex Hook Capture',
+      color: '#0ea5e9',
+      path: TEST_PROJECT_PATH
+    })
+    const task = await s.createTask({
+      projectId: project.id,
+      title: 'CHC codex task',
+      status: 'todo'
+    })
+    await mainWindow.evaluate((id) => window.api.db.updateTask({ id, terminalMode: 'codex' }), task.id)
+
+    // The codex SessionStart hook carries the codex CLI session_id — the
+    // PRIMARY resume-id capture path (no /status command needed).
+    const codexSessionId = '88888888-8888-4888-8888-888888888888'
+    const res = spawnSync('bash', [scriptPath], {
+      input: JSON.stringify({
+        hook_event_name: 'SessionStart',
+        session_id: codexSessionId,
+        source: 'startup'
+      }),
+      env: {
+        ...process.env,
+        SLAYZONE_AGENT_HOOK_URL: `http://127.0.0.1:${port}/api/agent-hook`,
+        SLAYZONE_AGENT_ID: 'codex',
+        SLAYZONE_TASK_ID: task.id
+      }
+    })
+    expect(res.status).toBe(0)
+
+    await expect
+      .poll(
+        async () => {
+          const t = await mainWindow.evaluate((id) => window.api.db.getTask(id), task.id)
+          const pc = (t as { provider_config?: unknown } | null)?.provider_config
+          const parsed = typeof pc === 'string' ? JSON.parse(pc) : pc
+          return (parsed as { codex?: { conversationId?: string } } | null)?.codex?.conversationId ?? null
+        },
+        { timeout: 5000 }
+      )
+      .toBe(codexSessionId)
   })
 })
 

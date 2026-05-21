@@ -4,6 +4,7 @@ export {
   getClaudeSettingsPath,
   getGeminiSettingsPath,
   getCodexHooksPath,
+  getAntigravityHooksPath,
   getOpencodePluginPath
 } from './dirs'
 export { ensureDataRoot, getTrpcPort, getServerPort, getServerHost } from './paths'
