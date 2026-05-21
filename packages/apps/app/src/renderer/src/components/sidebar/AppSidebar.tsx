@@ -322,6 +322,10 @@ export function AppSidebar({
         />
         {/* Floating card overlay (with right-edge spatial grace buffer) */}
         <div
+          // Marks the card as a popover-class overlay so the browser
+          // WebContentsView hides itself while the card covers it (native
+          // views always render above renderer DOM — z-index can't beat them).
+          data-slot={hoverRevealed ? 'sidebar-reveal-overlay' : undefined}
           className={cn(
             'fixed inset-y-0 left-0 z-40 transition-transform duration-200 ease-out pr-10',
             hoverRevealed ? 'translate-x-0' : '-translate-x-full pointer-events-none'
