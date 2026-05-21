@@ -42,7 +42,6 @@ import {
   type StateTraceEvent
 } from './state-machine'
 import {
-  quoteForShell,
   buildExecCommand,
   resolveUserShell,
   getShellStartupArgs,
