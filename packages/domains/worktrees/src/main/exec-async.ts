@@ -1,7 +1,55 @@
 import { spawn } from 'child_process'
+import { existsSync } from 'fs'
+import path from 'path'
+import { platform } from 'os'
 import { recordDiagnosticEvent } from '@slayzone/diagnostics/main'
 import type { DiagnosticSource } from '@slayzone/diagnostics/shared'
 import { runGit, type GitExecutionContext } from './run-git'
+
+/**
+ * Node's child_process.spawn does PATH lookup on Windows but does NOT honour
+ * PATHEXT — so `spawn('git', ...)` fails with ENOENT when the binary is
+ * `git.exe`. Resolve to an absolute path once on first use so subsequent
+ * spawns work without `shell: true` (which would force us to do our own
+ * cmd.exe arg quoting).
+ *
+ * Overridable via SLAYZONE_GIT_PATH for power users / CI.
+ */
+let cachedGitPath: string | null = null
+function resolveGitExecutable(): string {
+  if (cachedGitPath) return cachedGitPath
+  const override = process.env.SLAYZONE_GIT_PATH
+  if (override && existsSync(override)) {
+    cachedGitPath = override
+    return cachedGitPath
+  }
+  if (platform() !== 'win32') {
+    cachedGitPath = 'git'
+    return cachedGitPath
+  }
+  const candidates = [
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Git', 'cmd', 'git.exe') : null,
+    process.env.ProgramFiles
+      ? path.join(process.env.ProgramFiles, 'Git', 'mingw64', 'bin', 'git.exe')
+      : null,
+    process.env['ProgramFiles(x86)']
+      ? path.join(process.env['ProgramFiles(x86)']!, 'Git', 'cmd', 'git.exe')
+      : null,
+    process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'cmd', 'git.exe')
+      : null
+  ].filter((c): c is string => !!c)
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      cachedGitPath = candidate
+      return cachedGitPath
+    }
+  }
+  // Fall back to the bare name — better an ENOENT we already have than
+  // refusing to spawn. Tests that mock spawn can also pass.
+  cachedGitPath = 'git'
+  return cachedGitPath
+}
 
 export function trimOutput(value: unknown, maxLength = 1200): string | null {
   if (typeof value !== 'string') return null
@@ -24,10 +72,15 @@ export function execAsync(
   opts: { cwd?: string; timeout?: number; source?: DiagnosticSource } = {}
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
+    // Resolve `git` to its absolute path on Windows so the spawn doesn't ENOENT
+    // (PATH lookup is honoured by child_process but PATHEXT is not). Bare
+    // `git` works on macOS/Linux. Callers using other commands (docker, ssh)
+    // pass the absolute path themselves.
+    const effectiveCommand = command === 'git' ? resolveGitExecutable() : command
     const label = `${command} ${args.join(' ')}`
     const source = opts.source ?? 'git'
     const startedAt = Date.now()
-    const child = spawn(command, args, {
+    const child = spawn(effectiveCommand, args, {
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe']
     })
