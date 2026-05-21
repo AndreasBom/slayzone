@@ -1,6 +1,7 @@
 import { spawn } from 'child_process'
 import { recordDiagnosticEvent } from '@slayzone/diagnostics/main'
 import type { DiagnosticSource } from '@slayzone/diagnostics/shared'
+import { runGit, type GitExecutionContext } from './run-git'
 
 export function trimOutput(value: unknown, maxLength = 1200): string | null {
   if (typeof value !== 'string') return null
@@ -72,9 +73,19 @@ export function execAsync(
   })
 }
 
-/** Async git execution — rejects on non-zero exit. */
-export function execGit(args: string[], options: { cwd: string }): Promise<string> {
-  return execAsync('git', args, { cwd: options.cwd }).then((result) => {
+/**
+ * Async git execution — rejects on non-zero exit.
+ *
+ * Routes through `runGit` so the same callsite transparently supports remote
+ * SSH execution when `options.executionContext.type === 'ssh'` is provided.
+ * Existing callers that pass only `{ cwd }` continue to run git locally
+ * (host context), so this consolidation is a no-op for the legacy path.
+ */
+export function execGit(
+  args: string[],
+  options: { cwd: string; executionContext?: GitExecutionContext }
+): Promise<string> {
+  return runGit(options.executionContext ?? null, args, { cwd: options.cwd }).then((result) => {
     if (result.status !== 0) {
       const errMsg = result.stderr.trim() || `git command failed: git ${args.join(' ')}`
       const error = new Error(errMsg) as Error & {
@@ -92,6 +103,9 @@ export function execGit(args: string[], options: { cwd: string }): Promise<strin
 }
 
 /** Like execGit, but appends -z for NUL-delimited output and returns a parsed filename array. */
-export function execGitFileList(args: string[], options: { cwd: string }): Promise<string[]> {
+export function execGitFileList(
+  args: string[],
+  options: { cwd: string; executionContext?: GitExecutionContext }
+): Promise<string[]> {
   return execGit([...args, '-z'], options).then((out) => out.split('\0').filter(Boolean))
 }
