@@ -6,8 +6,7 @@ import { Input } from '@slayzone/ui'
 import { Label } from '@slayzone/ui'
 import { ColorPicker } from '@slayzone/ui'
 import { cn } from '@slayzone/ui'
-import type { Project } from '@slayzone/projects/shared'
-import type { ExecutionContext } from '@slayzone/terminal/shared'
+import type { Project, ExecutionContext } from '@slayzone/projects/shared'
 export type ProjectStartMode = 'scratch' | 'github' | 'linear'
 
 export interface ProjectCreationContext {
