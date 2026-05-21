@@ -25,7 +25,8 @@ export function isImageFile(filePath: string): boolean {
 
 export function useFileEditor(
   projectPath: string,
-  initialEditorState?: EditorOpenFilesState | null
+  initialEditorState?: EditorOpenFilesState | null,
+  projectId?: string
 ) {
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
@@ -59,7 +60,7 @@ export function useFileEditor(
             })
             continue
           }
-          const result = await window.api.fs.readFile(projectPath, filePath)
+          const result = await window.api.fs.readFile(projectPath, filePath, undefined, projectId)
           if (result.tooLarge) {
             setOpenFiles((prev) => {
               if (prev.some((f) => f.path === filePath)) return prev
@@ -309,7 +310,7 @@ export function useFileEditor(
   const openFileForced = useCallback(
     async (filePath: string) => {
       try {
-        const result = await window.api.fs.readFile(projectPath, filePath, true)
+        const result = await window.api.fs.readFile(projectPath, filePath, true, projectId)
         if (result.content == null) return
         setOpenFiles((prev) =>
           prev.map((f) =>

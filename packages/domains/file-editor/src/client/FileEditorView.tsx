@@ -270,7 +270,7 @@ export const FileEditorView = forwardRef<FileEditorViewHandle, FileEditorViewPro
       fileVersions,
       goToPosition,
       clearGoToPosition
-    } = useFileEditor(projectPath, initialEditorState)
+    } = useFileEditor(projectPath, initialEditorState, projectId)
 
     const { editorOverrideThemeId, editorThemeId, contentVariant } = useTheme()
     const editorPanelStyle = useMemo(() => {
