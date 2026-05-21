@@ -120,6 +120,9 @@ function compactChildren(
 
 interface EditorFileTreeProps {
   projectPath: string
+  /** Project id, passed to fs IPC so ssh-context projects route their
+   *  listings through the remote filesystem rather than the host. */
+  projectId?: string
   onOpenFile: (path: string) => void
   onFileRenamed?: (oldPath: string, newPath: string) => void
   activeFilePath: string | null
@@ -140,6 +143,7 @@ export const EditorFileTree = forwardRef<EditorFileTreeHandle, EditorFileTreePro
   function EditorFileTree(
     {
       projectPath,
+      projectId,
       onOpenFile,
       onFileRenamed,
       activeFilePath,
@@ -276,7 +280,7 @@ export const EditorFileTree = forwardRef<EditorFileTreeHandle, EditorFileTreePro
 
     const loadDir = useCallback(
       async (dirPath: string) => {
-        const items = await window.api.fs.readDir(projectPath, dirPath)
+        const items = await window.api.fs.readDir(projectPath, dirPath, projectId)
         setDirContents((prev) => {
           const next = new Map(prev)
           next.set(dirPath, items)
@@ -284,7 +288,7 @@ export const EditorFileTree = forwardRef<EditorFileTreeHandle, EditorFileTreePro
         })
         return items
       },
-      [projectPath]
+      [projectPath, projectId]
     )
 
     // Load root + persisted expanded folders on mount

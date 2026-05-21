@@ -1515,7 +1515,7 @@ app
       enableTestChannels: isPlaywright
     })
     logBoot('integration handlers registered')
-    registerFileEditorHandlers(ipcMain)
+    registerFileEditorHandlers(ipcMain, db)
     registerClipboardHandlers(ipcMain)
     registerScreenshotHandlers(browserViewManager)
     registerExportImportHandlers(ipcMain, db, isPlaywright)

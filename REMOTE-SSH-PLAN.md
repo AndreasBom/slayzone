@@ -28,7 +28,8 @@ Companion to [`REMOTE-SSH-SPEC.md`](./REMOTE-SSH-SPEC.md). This document is the 
 | **Phase 2 step 1** — transport-aware git command builder (`runGit`, `buildGitCommand`, `posixQuote`, `resolveProjectExecutionContext`, `resolveSshExecutable`) | `302d0450` | ✅ |
 | **Phase 2 (refactor)** — `execGit` / `execGitFileList` route through `runGit` so optional `executionContext` propagates to every downstream call site without changing them | `44c6634e` | ✅ |
 | **Phase 2 step 3** — `git:probeRepo(projectId)` IPC handler + renderer migration (Git tab no longer says "Not a git repository" for remote SSH projects) | `68adf646` | ✅ |
-| **Phase 2 step 2** — thread optional `projectId` through 7 Git-tab read APIs (`getCurrentBranch`, `listBranches`, `hasUncommittedChanges`, `getRecentCommits`, `getStatusSummary`, `getRemoteUrl`, `getAheadBehindUpstream`); handlers resolve `executionContext` from project; `useConsolidatedGeneralData` threads `task.project_id` | uncommitted | 🟡 needs commit |
+| **Phase 2 step 2** — thread optional `projectId` through 7 Git-tab read APIs (`getCurrentBranch`, `listBranches`, `hasUncommittedChanges`, `getRecentCommits`, `getStatusSummary`, `getRemoteUrl`, `getAheadBehindUpstream`); handlers resolve `executionContext` from project; `useConsolidatedGeneralData` threads `task.project_id` | `ec27fb53` | ✅ |
+| **Phase 3 (read path)** — `ssh-fs.ts` module with `sshReadDir` + `sshReadFile`; `fs:readDir` / `fs:readFile` IPC accept optional `projectId` and route via ssh when context is ssh; `EditorFileTree` / `FileEditorView` thread `task.project_id`. File-write paths intentionally still host-only | uncommitted | 🟡 needs commit |
 
 ### Uncommitted at time of writing
 

@@ -119,6 +119,9 @@ export interface FileEditorViewHandle {
 
 interface FileEditorViewProps {
   projectPath: string
+  /** Project id, threaded into fs.readDir / fs.readFile so projects whose
+   *  execution_context is ssh resolve listings against the remote host. */
+  projectId?: string
   initialEditorState?: EditorOpenFilesState | null
   onEditorStateChange?: (state: EditorOpenFilesState) => void
 }
@@ -238,7 +241,10 @@ function MarkdownFilePane({
 }
 
 export const FileEditorView = forwardRef<FileEditorViewHandle, FileEditorViewProps>(
-  function FileEditorView({ projectPath, initialEditorState, onEditorStateChange }, ref) {
+  function FileEditorView(
+    { projectPath, projectId, initialEditorState, onEditorStateChange },
+    ref
+  ) {
     const {
       openFiles,
       activeFile,
@@ -606,6 +612,7 @@ export const FileEditorView = forwardRef<FileEditorViewHandle, FileEditorViewPro
                 <EditorFileTree
                   ref={treeRef}
                   projectPath={projectPath}
+                  projectId={projectId}
                   onOpenFile={openFile}
                   onFileRenamed={renameOpenFile}
                   activeFilePath={activeFilePath}

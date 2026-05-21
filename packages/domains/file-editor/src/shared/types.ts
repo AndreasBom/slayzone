@@ -13,6 +13,9 @@ export interface ReadFileResult {
   content: string | null
   tooLarge?: boolean
   sizeBytes?: number
+  /** Populated when a transport-level failure prevented the read (e.g. ssh
+   *  connect timeout). Distinct from `tooLarge` and "file empty". */
+  error?: string
 }
 
 export interface FileSearchMatch {

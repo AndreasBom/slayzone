@@ -13,6 +13,55 @@ import type {
   GitStatusMap,
   GitFileStatus
 } from '../shared'
+import { sshReadDir, sshReadFile } from './ssh-fs'
+
+/**
+ * Structural shape of the bits of `better-sqlite3.Database` we use. Avoids a
+ * runtime/types dep on better-sqlite3 inside file-editor — callers already
+ * provide a real Database instance from the app composition root.
+ */
+interface ProjectDbReader {
+  prepare(sql: string): { get(id: string): unknown }
+}
+
+/**
+ * Resolve a project's ssh target if its `execution_context.type === 'ssh'`.
+ * Returns null for host projects, missing rows, or malformed JSON — caller
+ * uses local-fs in those cases.
+ *
+ * Inlined rather than re-imported from worktrees/run-git so the file-editor
+ * domain doesn't grow a worktrees dep just for one DB lookup.
+ */
+function resolveSshTargetForProject(
+  db: ProjectDbReader | null | undefined,
+  projectId: string | null | undefined
+): { target: string; remoteRoot: string | null } | null {
+  if (!db || !projectId) return null
+  let row: { execution_context: unknown; path: string | null } | undefined
+  try {
+    row = db
+      .prepare('SELECT execution_context, path FROM projects WHERE id = ?')
+      .get(projectId) as { execution_context: unknown; path: string | null } | undefined
+  } catch {
+    return null
+  }
+  if (!row || typeof row.execution_context !== 'string') return null
+  try {
+    const parsed = JSON.parse(row.execution_context)
+    if (parsed == null || typeof parsed !== 'object') return null
+    const type = (parsed as { type?: unknown }).type
+    if (type !== 'ssh') return null
+    const target = (parsed as { target?: unknown }).target
+    if (typeof target !== 'string' || target.length === 0) return null
+    const workdir = (parsed as { workdir?: unknown }).workdir
+    return {
+      target,
+      remoteRoot: typeof workdir === 'string' ? workdir : row.path
+    }
+  } catch {
+    return null
+  }
+}
 
 const ALWAYS_IGNORED = new Set(['.git', '.DS_Store'])
 
@@ -95,8 +144,28 @@ function addWinToWatcher(root: string, win: BrowserWindow, wins: Set<BrowserWind
   })
 }
 
-export function registerFileEditorHandlers(ipcMain: IpcMain): void {
-  ipcMain.handle('fs:readDir', (_event, rootPath: string, dirPath: string): DirEntry[] => {
+export function registerFileEditorHandlers(ipcMain: IpcMain, db?: ProjectDbReader | null): void {
+  ipcMain.handle(
+    'fs:readDir',
+    async (_event, rootPath: string, dirPath: string, projectId?: string): Promise<DirEntry[]> => {
+      // SSH fast path: if the project's execution_context is ssh, list the
+      // remote dir via ssh+find rather than the local fs. Local rootPath is
+      // ignored — we use the ssh target's `workdir` (falling back to the
+      // project's `path` column) as the remote root.
+      const ssh = resolveSshTargetForProject(db, projectId)
+      if (ssh && ssh.remoteRoot) {
+        try {
+          return await sshReadDir(ssh.target, ssh.remoteRoot, dirPath)
+        } catch {
+          // Surface as empty rather than throw so the renderer can recover.
+          return []
+        }
+      }
+      return readDirLocal(rootPath, dirPath)
+    }
+  )
+
+  function readDirLocal(rootPath: string, dirPath: string): DirEntry[] {
     const abs = dirPath ? assertWithinRoot(rootPath, dirPath) : path.resolve(rootPath)
     let entries: fs.Dirent[]
     try {
@@ -134,22 +203,42 @@ export function registerFileEditorHandlers(ipcMain: IpcMain): void {
         if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
         return a.name.localeCompare(b.name)
       })
-  })
+  }
 
   ipcMain.handle(
     'fs:readFile',
-    (_event, rootPath: string, filePath: string, force?: boolean): ReadFileResult => {
-      const abs = assertWithinRoot(rootPath, filePath)
-      const stat = fs.statSync(abs)
-      if (stat.size > FORCE_MAX_FILE_SIZE) {
-        return { content: null, tooLarge: true, sizeBytes: stat.size }
+    async (
+      _event,
+      rootPath: string,
+      filePath: string,
+      force?: boolean,
+      projectId?: string
+    ): Promise<ReadFileResult> => {
+      const ssh = resolveSshTargetForProject(db, projectId)
+      if (ssh && ssh.remoteRoot) {
+        try {
+          return await sshReadFile(ssh.target, ssh.remoteRoot, filePath, force)
+        } catch (err) {
+          // Surface as empty content with a small error marker so the editor
+          // shows the user *something* rather than crashing the IPC.
+          return { content: null, tooLarge: false, sizeBytes: 0, error: (err as Error).message }
+        }
       }
-      if (!force && stat.size > MAX_FILE_SIZE) {
-        return { content: null, tooLarge: true, sizeBytes: stat.size }
-      }
-      return { content: fs.readFileSync(abs, 'utf-8') }
+      return readFileLocal(rootPath, filePath, force)
     }
   )
+
+  function readFileLocal(rootPath: string, filePath: string, force?: boolean): ReadFileResult {
+    const abs = assertWithinRoot(rootPath, filePath)
+    const stat = fs.statSync(abs)
+    if (stat.size > FORCE_MAX_FILE_SIZE) {
+      return { content: null, tooLarge: true, sizeBytes: stat.size }
+    }
+    if (!force && stat.size > MAX_FILE_SIZE) {
+      return { content: null, tooLarge: true, sizeBytes: stat.size }
+    }
+    return { content: fs.readFileSync(abs, 'utf-8') }
+  }
 
   ipcMain.handle('fs:listAllFiles', (_event, rootPath: string): string[] => {
     const root = path.resolve(rootPath)

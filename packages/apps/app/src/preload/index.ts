@@ -1083,9 +1083,10 @@ const api: ElectronAPI = {
     }
   },
   fs: {
-    readDir: (rootPath, dirPath) => ipcRenderer.invoke('fs:readDir', rootPath, dirPath),
-    readFile: (rootPath, filePath, force) =>
-      ipcRenderer.invoke('fs:readFile', rootPath, filePath, force),
+    readDir: (rootPath, dirPath, projectId) =>
+      ipcRenderer.invoke('fs:readDir', rootPath, dirPath, projectId),
+    readFile: (rootPath, filePath, force, projectId) =>
+      ipcRenderer.invoke('fs:readFile', rootPath, filePath, force, projectId),
     writeFile: (rootPath, filePath, content) =>
       ipcRenderer.invoke('fs:writeFile', rootPath, filePath, content),
     createFile: (rootPath, filePath) => ipcRenderer.invoke('fs:createFile', rootPath, filePath),

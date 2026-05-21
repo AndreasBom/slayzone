@@ -1294,8 +1294,13 @@ export interface ElectronAPI {
     }
   }
   fs: {
-    readDir: (rootPath: string, dirPath: string) => Promise<DirEntry[]>
-    readFile: (rootPath: string, filePath: string, force?: boolean) => Promise<ReadFileResult>
+    readDir: (rootPath: string, dirPath: string, projectId?: string) => Promise<DirEntry[]>
+    readFile: (
+      rootPath: string,
+      filePath: string,
+      force?: boolean,
+      projectId?: string
+    ) => Promise<ReadFileResult>
     writeFile: (rootPath: string, filePath: string, content: string) => Promise<void>
     createFile: (rootPath: string, filePath: string) => Promise<void>
     createDir: (rootPath: string, dirPath: string) => Promise<void>

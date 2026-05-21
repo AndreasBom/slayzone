@@ -3376,6 +3376,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                   <FileEditorView
                     ref={fileEditorRefCallback}
                     projectPath={effectiveRepoPath}
+                    projectId={task.project_id}
                     initialEditorState={task.editor_open_files}
                     onEditorStateChange={handleEditorStateChange}
                   />
