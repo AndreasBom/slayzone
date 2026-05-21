@@ -123,6 +123,10 @@ export interface ChatDriverContext {
   chatEffort: string | null
   /** Resolved runtime/permission mode for this spawn (`null` = provider default). */
   chatMode: string | null
+  /** Resolved collaboration mode for this spawn (`null` = provider default). */
+  chatCollaboration: string | null
+  /** Whether Codex Fast Mode (`serviceTier: 'fast'`) is enabled for this spawn. */
+  chatFastMode: boolean
 }
 
 /**

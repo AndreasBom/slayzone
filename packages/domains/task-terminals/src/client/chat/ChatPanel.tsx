@@ -15,12 +15,16 @@ import { ChatSearchBar } from './ChatSearchBar'
 import { useChatMode } from './useChatMode'
 import { useChatModel } from './useChatModel'
 import { useChatEffort } from './useChatEffort'
+import { useChatCollaboration } from './useChatCollaboration'
+import { useChatFastMode } from './useChatFastMode'
 import { useChatQueue } from './useChatQueue'
 import { useChatSearch } from './useChatSearch'
 import {
   chatModesForMode,
   modelsForMode,
-  modelSupportsEffortForMode
+  modelSupportsEffortForMode,
+  modeSupportsCollaboration,
+  modeSupportsFastMode
 } from '@slayzone/terminal/shared'
 import {
   cn,
@@ -28,6 +32,7 @@ import {
   AgentModePill,
   AgentModelPill,
   AgentEffortPill,
+  AgentCollaborationPill,
   nextAgentMode,
   ContextMenu,
   ContextMenuTrigger,
@@ -151,6 +156,19 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(
       cwd
     })
     const { chatEffort, effortChanging, handleEffortChange } = useChatEffort({
+      taskId,
+      mode,
+      tabId,
+      cwd
+    })
+    const { chatCollaboration, collaborationChanging, handleCollaborationChange } =
+      useChatCollaboration({
+        taskId,
+        mode,
+        tabId,
+        cwd
+      })
+    const { chatFastMode, fastModeChanging, handleFastModeChange } = useChatFastMode({
       taskId,
       mode,
       tabId,
@@ -1271,7 +1289,23 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(
                         onChange={(next) => {
                           void handleEffortChange(next)
                         }}
-                        disabled={effortChanging || inFlight}
+                        disabled={effortChanging || fastModeChanging || inFlight}
+                        compact
+                        variant="text"
+                        showFastMode={modeSupportsFastMode(mode)}
+                        fastMode={chatFastMode}
+                        onFastModeChange={(next) => {
+                          void handleFastModeChange(next)
+                        }}
+                      />
+                    )}
+                    {modeSupportsCollaboration(mode) && (
+                      <AgentCollaborationPill
+                        collaboration={chatCollaboration}
+                        onChange={(next) => {
+                          void handleCollaborationChange(next)
+                        }}
+                        disabled={collaborationChanging || inFlight}
                         compact
                         variant="text"
                       />

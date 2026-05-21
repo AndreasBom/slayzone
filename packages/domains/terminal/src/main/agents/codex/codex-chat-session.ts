@@ -23,12 +23,17 @@ import type {
   PermissionDecision
 } from '../types'
 import { CodexAppServerClient, type JsonRpcId } from './codex-app-server-client'
+import { defaultModelForMode } from '../../../shared/chat-model-catalog'
+import { CODEX_FAST_SERVICE_TIER } from '../../../shared/chat-fast-mode'
+import { CODEX_DEFAULT_INSTRUCTIONS, CODEX_PLAN_INSTRUCTIONS } from './codex-collaboration-instructions'
 import type {
   CodexApprovalDecision,
   CodexApprovalPolicy,
+  CodexCollaborationMode,
   CodexDeltaNotification,
   CodexErrorNotification,
   CodexItemNotification,
+  CodexModeKind,
   CodexPlanNotification,
   CodexReasoningEffort,
   CodexSandboxMode,
@@ -100,6 +105,14 @@ function mapRuntimePolicy(mode: string | null, cwd: string): CodexRuntimePolicy 
   }
 }
 
+/**
+ * Map a SlayZone collaboration mode onto Codex's `ModeKind`. `null`/unknown →
+ * undefined so the driver omits `collaborationMode` entirely (Codex default).
+ */
+function mapCollaboration(value: string | null): CodexModeKind | undefined {
+  return value === 'plan' || value === 'default' ? value : undefined
+}
+
 /** Map a SlayZone reasoning-effort alias onto Codex's `ReasoningEffort` enum. */
 function mapEffort(effort: string | null): CodexReasoningEffort | undefined {
   switch (effort) {
@@ -163,12 +176,16 @@ class CodexChatSession implements ChatSessionDriver {
   private model: string | null = null
   private effort: string | null = null
   private mode: string | null = null
+  private collaboration: string | null = null
+  private fastMode = false
 
   start(ctx: ChatDriverContext): Promise<void> {
     this.ctx = ctx
     this.model = ctx.chatModel
     this.effort = ctx.chatEffort
     this.mode = ctx.chatMode
+    this.collaboration = ctx.chatCollaboration
+    this.fastMode = ctx.chatFastMode
     this.client = new CodexAppServerClient({
       write: (line) => ctx.write(line),
       onNotification: (method, params) => this.onNotification(method, params),
@@ -288,6 +305,25 @@ class CodexChatSession implements ChatSessionDriver {
     this.startTurn(text)
   }
 
+  /**
+   * Build the `turn/start.collaborationMode` payload for the current
+   * collaboration setting. Returns undefined when no collaboration mode is
+   * set so the param is omitted entirely (Codex falls back to its default).
+   */
+  private buildCollaborationMode(): CodexCollaborationMode | undefined {
+    const kind = mapCollaboration(this.collaboration)
+    if (!kind) return undefined
+    return {
+      mode: kind,
+      settings: {
+        model: codexModelOrUndefined(this.model) ?? defaultModelForMode('codex-chat'),
+        reasoning_effort: mapEffort(this.effort) ?? 'medium',
+        developer_instructions:
+          kind === 'plan' ? CODEX_PLAN_INSTRUCTIONS : CODEX_DEFAULT_INSTRUCTIONS
+      }
+    }
+  }
+
   private startTurn(text: string): void {
     const client = this.client
     const ctx = this.ctx
@@ -295,6 +331,7 @@ class CodexChatSession implements ChatSessionDriver {
     const policy = mapRuntimePolicy(this.mode, ctx.cwd)
     const effort = mapEffort(this.effort)
     const model = codexModelOrUndefined(this.model)
+    const collaborationMode = this.buildCollaborationMode()
     client
       .request<CodexTurnStartResponse>(
         'turn/start',
@@ -304,7 +341,9 @@ class CodexChatSession implements ChatSessionDriver {
           approvalPolicy: policy.approvalPolicy,
           sandboxPolicy: policy.sandboxPolicy,
           ...(model ? { model } : {}),
-          ...(effort ? { effort } : {})
+          ...(effort ? { effort } : {}),
+          ...(collaborationMode ? { collaborationMode } : {}),
+          ...(this.fastMode ? { serviceTier: CODEX_FAST_SERVICE_TIER } : {})
         },
         TURN_REQUEST_TIMEOUT_MS
       )
@@ -341,6 +380,10 @@ class CodexChatSession implements ChatSessionDriver {
       this.mode = request.mode
     } else if (subtype === 'set_effort' && typeof request.effort === 'string') {
       this.effort = request.effort
+    } else if (subtype === 'set_collaboration' && typeof request.collaboration === 'string') {
+      this.collaboration = request.collaboration
+    } else if (subtype === 'set_fast' && typeof request.fastMode === 'boolean') {
+      this.fastMode = request.fastMode
     }
     return Promise.resolve({ ok: true })
   }

@@ -10,6 +10,8 @@ import {
   updateSessionChatMode,
   updateSessionChatModel,
   updateSessionChatEffort,
+  updateSessionChatCollaboration,
+  updateSessionChatFastMode,
   kill as killChat,
   removeSession,
   recordInterrupted,
@@ -60,6 +62,12 @@ import { chatModelToFlags } from '../shared/chat-model'
 import { defaultModelForMode, isValidModelForMode } from '../shared/chat-model-catalog'
 import { defaultChatModeForMode, isValidChatModeForMode } from '../shared/chat-mode-catalog'
 import { chatEffortToFlags, isChatEffort, type ChatEffort } from '../shared/chat-effort'
+import {
+  isChatCollaborationMode,
+  modeSupportsCollaboration,
+  type ChatCollaborationMode
+} from '../shared/chat-collaboration'
+import { modeSupportsFastMode } from '../shared/chat-fast-mode'
 
 export interface ChatHandlerOpts {
   /** Optional secondary subscriber to every persisted chat event. Used by the
@@ -128,6 +136,10 @@ interface ProviderConfigEntry {
   chatModel?: string | null
   /** Reasoning effort level. `null`/missing = inherit provider default. */
   chatEffort?: ChatEffort | null
+  /** Collaboration mode (Codex `plan`/`default`). `null`/missing = provider default. */
+  chatCollaboration?: ChatCollaborationMode | null
+  /** Codex Fast Mode (`serviceTier: 'fast'`). `undefined`/missing = off. */
+  chatFastMode?: boolean
 }
 
 function readProviderConfig(db: Database, taskId: string, mode: string): ProviderConfigEntry {
@@ -198,6 +210,52 @@ function writeChatEffort(
   const existing = cfg[mode] ?? {}
   if ((existing.chatEffort ?? null) === chatEffort) return
   cfg[mode] = { ...existing, chatEffort }
+  db.prepare('UPDATE tasks SET provider_config = ? WHERE id = ?').run(JSON.stringify(cfg), taskId)
+}
+
+function writeChatCollaboration(
+  db: Database,
+  taskId: string,
+  mode: string,
+  chatCollaboration: ChatCollaborationMode | null
+): void {
+  const row = db.prepare('SELECT provider_config FROM tasks WHERE id = ?').get(taskId) as
+    | { provider_config: string | null }
+    | undefined
+  let cfg: Record<string, ProviderConfigEntry> = {}
+  if (row?.provider_config) {
+    try {
+      cfg = JSON.parse(row.provider_config) as Record<string, ProviderConfigEntry>
+    } catch {
+      cfg = {}
+    }
+  }
+  const existing = cfg[mode] ?? {}
+  if ((existing.chatCollaboration ?? null) === chatCollaboration) return
+  cfg[mode] = { ...existing, chatCollaboration }
+  db.prepare('UPDATE tasks SET provider_config = ? WHERE id = ?').run(JSON.stringify(cfg), taskId)
+}
+
+function writeChatFastMode(
+  db: Database,
+  taskId: string,
+  mode: string,
+  chatFastMode: boolean
+): void {
+  const row = db.prepare('SELECT provider_config FROM tasks WHERE id = ?').get(taskId) as
+    | { provider_config: string | null }
+    | undefined
+  let cfg: Record<string, ProviderConfigEntry> = {}
+  if (row?.provider_config) {
+    try {
+      cfg = JSON.parse(row.provider_config) as Record<string, ProviderConfigEntry>
+    } catch {
+      cfg = {}
+    }
+  }
+  const existing = cfg[mode] ?? {}
+  if ((existing.chatFastMode ?? false) === chatFastMode) return
+  cfg[mode] = { ...existing, chatFastMode }
   db.prepare('UPDATE tasks SET provider_config = ? WHERE id = ?').run(JSON.stringify(cfg), taskId)
 }
 
@@ -368,12 +426,16 @@ async function buildHydrateOpts(
     fresh,
     chatModeOverride,
     chatModelOverride,
-    chatEffortOverride
+    chatEffortOverride,
+    chatCollaborationOverride,
+    chatFastModeOverride
   }: {
     fresh: boolean
     chatModeOverride?: string
     chatModelOverride?: string
     chatEffortOverride?: ChatEffort | null
+    chatCollaborationOverride?: ChatCollaborationMode | null
+    chatFastModeOverride?: boolean
   }
 ): Promise<Parameters<typeof hydrateSession>[0]> {
   const providerCfg = readProviderConfig(db, opts.taskId, opts.mode)
@@ -415,6 +477,21 @@ async function buildHydrateOpts(
       : await resolveAccountDefaultModel())
   const resolvedChatEffort: ChatEffort | null =
     chatEffortOverride !== undefined ? chatEffortOverride : (providerCfg.chatEffort ?? null)
+  // Collaboration mode (Codex `plan`/`default`). Only codex-chat carries it;
+  // for other providers it stays null and the driver omits `collaborationMode`.
+  const resolvedChatCollaboration: ChatCollaborationMode | null = modeSupportsCollaboration(
+    opts.mode
+  )
+    ? chatCollaborationOverride !== undefined
+      ? chatCollaborationOverride
+      : (providerCfg.chatCollaboration ?? null)
+    : null
+  // Codex Fast Mode (`serviceTier: 'fast'`). Only codex-chat carries it.
+  const resolvedChatFastMode: boolean = modeSupportsFastMode(opts.mode)
+    ? chatFastModeOverride !== undefined
+      ? chatFastModeOverride
+      : (providerCfg.chatFastMode ?? false)
+    : false
   // Append --model/--effort flags only for flag-driven providers (claude-chat).
   // codex-chat carries model/effort over the JSON-RPC `turn/start` params, not
   // CLI flags — its backend ignores `providerFlags` entirely.
@@ -446,6 +523,8 @@ async function buildHydrateOpts(
     chatMode: resolvedChatMode,
     chatModel: resolvedChatModel,
     chatEffort: resolvedChatEffort,
+    chatCollaboration: resolvedChatCollaboration,
+    chatFastMode: resolvedChatFastMode,
     onPersistSessionId: (id) => {
       writeChatConversationId(db, opts.taskId, opts.mode, id)
     },
@@ -940,6 +1019,94 @@ export function registerChatHandlers(
       )
       const created = await ensureSpawned(opts.tabId)
       writeChatEffort(db, opts.taskId, opts.mode, opts.chatEffort)
+      return created
+    }
+  )
+
+  ipcMain.handle(
+    'chat:getCollaboration',
+    (_, taskId: string, mode: string): ChatCollaborationMode | null => {
+      if (!modeSupportsCollaboration(mode)) return null
+      const cfg = readProviderConfig(db, taskId, mode)
+      const stored = cfg.chatCollaboration ?? null
+      return isChatCollaborationMode(stored) ? stored : null
+    }
+  )
+
+  ipcMain.handle(
+    'chat:setCollaboration',
+    async (
+      _,
+      opts: ChatCreateOpts & { chatCollaboration: ChatCollaborationMode }
+    ): Promise<ChatSessionInfo> => {
+      if (!isChatCollaborationMode(opts.chatCollaboration)) {
+        throw new Error(`Invalid chat collaboration mode: ${String(opts.chatCollaboration)}`)
+      }
+      if (!modeSupportsCollaboration(opts.mode)) {
+        throw new Error(`Collaboration mode not supported for "${opts.mode}"`)
+      }
+      // Pre-spawn: DB write + skeleton mutation. The collaboration mode is read
+      // off the skeleton when the first spawn builds the driver context.
+      const liveState = getSessionTerminalState(opts.tabId)
+      if (liveState === 'not-spawned') {
+        writeChatCollaboration(db, opts.taskId, opts.mode, opts.chatCollaboration)
+        updateSessionChatCollaboration(opts.tabId, opts.chatCollaboration)
+        const refreshed = getSessionInfo(opts.tabId)
+        if (refreshed) return refreshed
+      }
+      // Live session: kill+respawn (same pattern as chat:setEffort). Codex
+      // applies `collaborationMode` per `turn/start`, but a respawn keeps the
+      // thread cleanly re-initialized on the new mode.
+      removeSession(opts.tabId)
+      hydrateSession(
+        await buildHydrateOpts(db, opts, {
+          fresh: false,
+          chatCollaborationOverride: opts.chatCollaboration
+        })
+      )
+      const created = await ensureSpawned(opts.tabId)
+      writeChatCollaboration(db, opts.taskId, opts.mode, opts.chatCollaboration)
+      return created
+    }
+  )
+
+  ipcMain.handle('chat:getFastMode', (_, taskId: string, mode: string): boolean => {
+    if (!modeSupportsFastMode(mode)) return false
+    const cfg = readProviderConfig(db, taskId, mode)
+    return cfg.chatFastMode ?? false
+  })
+
+  ipcMain.handle(
+    'chat:setFastMode',
+    async (
+      _,
+      opts: ChatCreateOpts & { chatFastMode: boolean }
+    ): Promise<ChatSessionInfo> => {
+      if (typeof opts.chatFastMode !== 'boolean') {
+        throw new Error(`Invalid chat fast mode: ${String(opts.chatFastMode)}`)
+      }
+      if (!modeSupportsFastMode(opts.mode)) {
+        throw new Error(`Fast mode not supported for "${opts.mode}"`)
+      }
+      // Pre-spawn: DB write + skeleton mutation. The next spawn reads it off
+      // the skeleton when building the driver context.
+      const liveState = getSessionTerminalState(opts.tabId)
+      if (liveState === 'not-spawned') {
+        writeChatFastMode(db, opts.taskId, opts.mode, opts.chatFastMode)
+        updateSessionChatFastMode(opts.tabId, opts.chatFastMode)
+        const refreshed = getSessionInfo(opts.tabId)
+        if (refreshed) return refreshed
+      }
+      // Live session: kill+respawn (same pattern as chat:setEffort).
+      removeSession(opts.tabId)
+      hydrateSession(
+        await buildHydrateOpts(db, opts, {
+          fresh: false,
+          chatFastModeOverride: opts.chatFastMode
+        })
+      )
+      const created = await ensureSpawned(opts.tabId)
+      writeChatFastMode(db, opts.taskId, opts.mode, opts.chatFastMode)
       return created
     }
   )

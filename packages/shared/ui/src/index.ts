@@ -88,6 +88,7 @@ export * from './tooltip'
 export * from './agent-mode-pill'
 export * from './agent-model-pill'
 export * from './agent-effort-pill'
+export * from './agent-collaboration-pill'
 
 // Toast
 export { Toaster, toast } from 'sonner'

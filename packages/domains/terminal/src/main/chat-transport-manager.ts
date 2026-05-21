@@ -20,6 +20,7 @@ import type { BufferedEvent } from './chat-events-store'
 // alias for claude-chat, Codex model id for codex-chat) — typed as `string`.
 // The provider-aware catalog (`shared/chat-model-catalog.ts`) owns validity.
 import type { ChatEffort } from '../shared/chat-effort'
+import type { ChatCollaborationMode } from '../shared/chat-collaboration'
 import { markSessionUserInput, clearSessionUserInputMark } from './user-input-tracker'
 
 export { markSessionUserInput }
@@ -204,6 +205,10 @@ export interface ChatSessionInfo {
   chatModel?: string | null
   /** Resolved reasoning effort this session was spawned with. `null` = inherit. */
   chatEffort?: ChatEffort | null
+  /** Resolved collaboration mode this session was spawned with. `null` = provider default. */
+  chatCollaboration?: ChatCollaborationMode | null
+  /** Whether Codex Fast Mode was enabled for this session's spawn. */
+  chatFastMode?: boolean
 }
 
 interface Session {
@@ -253,6 +258,10 @@ interface Session {
   chatModel: string | null
   /** Resolved reasoning effort this session was spawned with. */
   chatEffort: ChatEffort | null
+  /** Resolved collaboration mode this session was spawned with. */
+  chatCollaboration: ChatCollaborationMode | null
+  /** Whether Codex Fast Mode was enabled for this session's spawn. */
+  chatFastMode: boolean
   onPersistSessionId?: (id: string) => void
   onInvalidResume?: () => void
   /**
@@ -791,6 +800,10 @@ export interface CreateChatOpts {
   chatModel?: string | null
   /** Resolved reasoning effort for the spawn (claude --effort). */
   chatEffort?: ChatEffort | null
+  /** Resolved collaboration mode for the spawn (Codex `turn/start.collaborationMode`). */
+  chatCollaboration?: ChatCollaborationMode | null
+  /** Whether Codex Fast Mode (`serviceTier: 'fast'`) is enabled for the spawn. */
+  chatFastMode?: boolean
 }
 
 /**
@@ -882,6 +895,8 @@ export function hydrateSession(opts: CreateChatOpts): ChatSessionInfo {
     chatMode: opts.chatMode ?? null,
     chatModel: opts.chatModel ?? null,
     chatEffort: opts.chatEffort ?? null,
+    chatCollaboration: opts.chatCollaboration ?? null,
+    chatFastMode: opts.chatFastMode ?? false,
     onPersistSessionId: opts.onPersistSessionId,
     onInvalidResume: opts.onInvalidResume,
     staged: [],
@@ -1035,7 +1050,9 @@ async function spawnSubprocess(session: Session): Promise<void> {
     providerFlags: opts.providerFlags,
     chatModel: session.chatModel,
     chatEffort: session.chatEffort,
-    chatMode: session.chatMode
+    chatMode: session.chatMode,
+    chatCollaboration: session.chatCollaboration,
+    chatFastMode: session.chatFastMode
   }
 
   // --- spawn: subprocess confirmed alive ---
@@ -1226,6 +1243,31 @@ export function updateSessionChatEffort(tabId: string, effort: ChatEffort | null
 }
 
 /**
+ * Mutate the in-memory `Session.chatCollaboration`. Used by the pre-spawn fast
+ * path of `chat:setCollaboration` so a skeleton session reflects the new value
+ * before the next spawn picks it up.
+ */
+export function updateSessionChatCollaboration(
+  tabId: string,
+  collaboration: ChatCollaborationMode | null
+): void {
+  const session = sessions.get(tabId)
+  if (!session) return
+  session.chatCollaboration = collaboration
+}
+
+/**
+ * Mutate the in-memory `Session.chatFastMode`. Used by the pre-spawn fast path
+ * of `chat:setFastMode` so a skeleton session reflects the new value before
+ * the next spawn picks it up.
+ */
+export function updateSessionChatFastMode(tabId: string, fastMode: boolean): void {
+  const session = sessions.get(tabId)
+  if (!session) return
+  session.chatFastMode = fastMode
+}
+
+/**
  * Reply to an inbound `control_request` (e.g. `subtype:'can_use_tool'` from
  * `--permission-prompt-tool stdio`). The renderer has surfaced the prompt
  * to the user and gathered their decision; the driver translates it to the
@@ -1400,7 +1442,9 @@ function toInfo(session: Session): ChatSessionInfo {
     ended: session.ended,
     chatMode: session.chatMode,
     chatModel: session.chatModel,
-    chatEffort: session.chatEffort
+    chatEffort: session.chatEffort,
+    chatCollaboration: session.chatCollaboration,
+    chatFastMode: session.chatFastMode
   }
 }
 

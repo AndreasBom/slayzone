@@ -44,8 +44,28 @@ export interface CodexTurnStartParams {
   sandboxPolicy?: CodexSandboxPolicy
   model?: string
   effort?: CodexReasoningEffort
+  collaborationMode?: CodexCollaborationMode
+  /** OpenAI service tier. `'fast'` enables Codex Fast Mode (faster delivery). */
+  serviceTier?: string
 }
 export type CodexUserInput = { type: 'text'; text: string; text_elements: [] }
+
+/** Codex collaboration mode kind — the behavioral axis (`turn/start`). */
+export type CodexModeKind = 'plan' | 'default'
+/**
+ * `turn/start.collaborationMode` — Codex's native `CollaborationMode`. `mode`
+ * is server-enforced (gates the `request_user_input` / `update_plan` tools);
+ * `settings.developer_instructions` carries the behavioral `<collaboration_mode>`
+ * prompt. Note the snake_case settings keys — the app-server expects them.
+ */
+export interface CodexCollaborationMode {
+  mode: CodexModeKind
+  settings: {
+    model: string
+    reasoning_effort: CodexReasoningEffort
+    developer_instructions: string
+  }
+}
 
 export type CodexApprovalPolicy = 'untrusted' | 'on-failure' | 'on-request' | 'never'
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'

@@ -1,9 +1,11 @@
-import { Brain, ChevronDown } from 'lucide-react'
+import { Brain, ChevronDown, Gauge, Zap } from 'lucide-react'
 import { cn } from './utils'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from './dropdown-menu'
 
@@ -45,6 +47,26 @@ const EFFORT_META: Record<AgentEffort, EffortMeta> = {
 
 const EFFORT_ORDER: AgentEffort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
+interface FastModeMeta {
+  label: string
+  description: string
+  Icon: typeof Zap
+}
+
+/** Normal (false) / Fast (true) — Codex Fast Mode section. */
+const FAST_MODE_META: Record<'normal' | 'fast', FastModeMeta> = {
+  normal: {
+    label: 'Normal',
+    description: 'Standard delivery speed.',
+    Icon: Gauge
+  },
+  fast: {
+    label: 'Fast',
+    description: 'Codex Fast Mode — ~1.5× faster delivery, higher credit usage.',
+    Icon: Zap
+  }
+}
+
 export interface AgentEffortPillProps {
   effort: AgentEffort
   onChange: (next: AgentEffort) => void
@@ -53,6 +75,15 @@ export interface AgentEffortPillProps {
   /** Visual style. `pill` = chip (default). `text` = plain inline text. */
   variant?: 'pill' | 'text'
   className?: string
+  /**
+   * When set, renders a separator + Normal/Fast section below the effort
+   * levels. Used for `codex-chat` to expose Codex Fast Mode.
+   */
+  showFastMode?: boolean
+  /** Current Fast Mode state. Required when `showFastMode` is set. */
+  fastMode?: boolean
+  /** Fast Mode change handler. Required when `showFastMode` is set. */
+  onFastModeChange?: (next: boolean) => void
 }
 
 export function AgentEffortPill({
@@ -61,9 +92,13 @@ export function AgentEffortPill({
   disabled,
   compact,
   variant = 'pill',
-  className
+  className,
+  showFastMode,
+  fastMode,
+  onFastModeChange
 }: AgentEffortPillProps) {
   const meta = EFFORT_META[effort]
+  const fastSection = showFastMode && onFastModeChange
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -112,6 +147,44 @@ export function AgentEffortPill({
             </DropdownMenuItem>
           )
         })}
+        {fastSection && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              Speed
+            </DropdownMenuLabel>
+            {(['normal', 'fast'] as const).map((id) => {
+              const itemMeta = FAST_MODE_META[id]
+              const ItemIcon = itemMeta.Icon
+              const isFast = id === 'fast'
+              const selected = isFast === Boolean(fastMode)
+              return (
+                <DropdownMenuItem
+                  key={id}
+                  onSelect={(e) => {
+                    if (selected) {
+                      e.preventDefault()
+                      return
+                    }
+                    onFastModeChange?.(isFast)
+                  }}
+                  className={cn('flex items-start gap-2 py-2', selected && 'bg-accent/40')}
+                >
+                  <ItemIcon className="size-4 mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium">{itemMeta.label}</div>
+                    <div className="text-[11px] text-muted-foreground leading-snug">
+                      {itemMeta.description}
+                    </div>
+                  </div>
+                  {selected && (
+                    <span className="text-[10px] text-muted-foreground self-center">current</span>
+                  )}
+                </DropdownMenuItem>
+              )
+            })}
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

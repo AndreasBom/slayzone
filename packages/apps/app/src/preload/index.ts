@@ -232,6 +232,8 @@ const api: ElectronAPI = {
     getProtocolClientStatus: () => ipcRenderer.invoke('app:get-protocol-client-status'),
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
     getTrpcPort: () => ipcRenderer.invoke('app:get-trpc-port') as Promise<number>,
+    getSidecarStatus: () => ipcRenderer.invoke('app:get-sidecar-status'),
+    revealSidecarLog: () => ipcRenderer.invoke('app:reveal-sidecar-log'),
     isTestsPanelEnabled: () => ipcRenderer.invoke('app:is-tests-panel-enabled'),
     isTestsPanelEnabledSync: ipcRenderer.sendSync('app:is-tests-panel-enabled-sync') as boolean,
     isJiraIntegrationEnabled: () => ipcRenderer.invoke('app:is-jira-integration-enabled'),
@@ -706,6 +708,26 @@ const api: ElectronAPI = {
       cwd: string
       chatEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
     }) => ipcRenderer.invoke('chat:setEffort', opts),
+    getCollaboration: (taskId: string, mode: string) =>
+      ipcRenderer.invoke('chat:getCollaboration', taskId, mode),
+    setCollaboration: (opts: {
+      tabId: string
+      taskId: string
+      mode: string
+      cwd: string
+      // Codex collaboration mode — `plan` or `default`.
+      chatCollaboration: 'default' | 'plan'
+    }) => ipcRenderer.invoke('chat:setCollaboration', opts),
+    getFastMode: (taskId: string, mode: string) =>
+      ipcRenderer.invoke('chat:getFastMode', taskId, mode),
+    setFastMode: (opts: {
+      tabId: string
+      taskId: string
+      mode: string
+      cwd: string
+      // Codex Fast Mode toggle.
+      chatFastMode: boolean
+    }) => ipcRenderer.invoke('chat:setFastMode', opts),
     getAutoEligibility: () => ipcRenderer.invoke('chat:getAutoEligibility'),
     list: () => ipcRenderer.invoke('chat:list'),
     listSkills: (cwd: string) => ipcRenderer.invoke('chat:listSkills', cwd),

@@ -52,7 +52,9 @@ async function main(): Promise<void> {
     providerFlags: [],
     chatModel: null,
     chatEffort: null,
-    chatMode: 'full-access'
+    chatMode: 'full-access',
+    chatCollaboration: null,
+    chatFastMode: false
   }
 
   const rl = createInterface({ input: child.stdout! })
