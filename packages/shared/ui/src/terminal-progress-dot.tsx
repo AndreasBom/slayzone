@@ -41,12 +41,15 @@ export function TerminalProgressDot({
   const stateLabel = stateStyle?.label ?? 'No session'
   const isRunning = !needsAttention && state === 'running'
 
+  // Single size source: wrapper tracks `size`. Inner indicator nests small
+  // when the progress ring is shown, else fills the wrapper. Running (spinner)
+  // and idle (dot) share one footprint within each case.
+  const innerSize = Math.round(size * (showProgress ? 0.57 : 0.85))
+
   const blob = (
     <span
-      className={cn(
-        'relative inline-flex items-center justify-center shrink-0 size-3.5',
-        className
-      )}
+      className={cn('relative inline-flex items-center justify-center shrink-0', className)}
+      style={{ width: size, height: size }}
     >
       {showProgress && (
         <ProgressRing
@@ -59,15 +62,17 @@ export function TerminalProgressDot({
       {showState &&
         (isRunning ? (
           <Loader2
+            size={innerSize}
             className={cn(
-              'relative z-10 size-3 animate-spin',
+              'relative z-10 animate-spin',
               stateStyle?.textColor ?? 'text-green-500'
             )}
             aria-label={stateLabel}
           />
         ) : (
           <span
-            className={cn('relative z-10 size-2 rounded-full', dotColor)}
+            className={cn('relative z-10 rounded-full', dotColor)}
+            style={{ width: innerSize, height: innerSize }}
             aria-label={stateLabel}
           />
         ))}
