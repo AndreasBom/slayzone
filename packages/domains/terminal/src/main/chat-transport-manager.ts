@@ -11,6 +11,7 @@ import type {
 } from './agents/types'
 import { getBackend } from './agents/registry'
 import { whichBinary as realWhichBinary } from './shell-env'
+import { recordDiagnosticEvent } from '@slayzone/diagnostics/main'
 import type { BufferedEvent } from './chat-events-store'
 // `chatMode` is an opaque, provider-specific runtime/permission mode id
 // (Claude `ChatMode` for claude-chat, Codex runtime mode for codex-chat) —
@@ -70,6 +71,13 @@ export interface TransportDeps {
    * survives full Electron app reload.
    */
   persistEvent: (tabId: string, seq: number, event: AgentEvent) => void
+  /**
+   * Non-destructive process-liveness probe (`process.kill(pid, 0)`-style).
+   * Injected so the watchdog tests can control the verdict deterministically.
+   */
+  isProcessAlive: (pid: number) => boolean
+  /** Optional watchdog timeout override — tests set tiny values to avoid real waits. */
+  watchdogTimings?: { startingBoundMs: number; runningStallMs: number; killGraceMs: number }
 }
 
 /**
@@ -108,6 +116,14 @@ const defaultDeps: TransportDeps = {
   },
   persistEvent: () => {
     // No-op default: persistence is wired in main via configureTransport().
+  },
+  isProcessAlive: (pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
   }
 }
 
@@ -232,6 +248,15 @@ interface Session {
   /** Re-entry guard: true while flushing `staged` through `commitEvent`. */
   flushingStaged: boolean
   /**
+   * Liveness watchdog — a single recurring timer that forces a session stuck
+   * in `starting`/`running` to a terminal state. `null` when disarmed.
+   */
+  watchdogTimer: ReturnType<typeof setTimeout> | null
+  /** Kill-escalation ladder position for the watchdog. */
+  watchdogKillStage: 'none' | 'sigterm' | 'sigkill'
+  /** Timestamp (ms) of the last forward-progress signal while `running`. */
+  watchdogLastProgress: number
+  /**
    * True while the CLI is parked on an inbound `permission-request` (e.g.
    * AskUserQuestion). Drives the idle flip so tab indicators / kanban /
    * automations see "waiting on user", but also gates the queue drainer:
@@ -244,6 +269,29 @@ interface Session {
 
 const MAX_BUFFER_EVENTS = 2000
 const STDERR_FLUSH_INTERVAL_MS = 100
+
+// Liveness watchdog — guarantees a session always reaches a terminal state.
+// `starting`: max wait for the subprocess to report ready (mirrors the xterm
+// watchdog). `running`: max time with NO forward progress — a sliding window
+// reset by every progress event, so a long healthy turn is never false-killed.
+// `kill grace`: wait after a SIGTERM before escalating to SIGKILL.
+const WATCHDOG_STARTING_BOUND_MS = 20_000
+const WATCHDOG_RUNNING_STALL_MS = 300_000
+const WATCHDOG_KILL_GRACE_MS = 2_000
+
+function watchdogTimings(): {
+  startingBoundMs: number
+  runningStallMs: number
+  killGraceMs: number
+} {
+  return (
+    deps.watchdogTimings ?? {
+      startingBoundMs: WATCHDOG_STARTING_BOUND_MS,
+      runningStallMs: WATCHDOG_RUNNING_STALL_MS,
+      killGraceMs: WATCHDOG_KILL_GRACE_MS
+    }
+  )
+}
 
 const sessions = new Map<string, Session>()
 
@@ -263,8 +311,166 @@ function appendToBuffer(session: Session, event: AgentEvent): number {
   return seq
 }
 
+// ---- liveness watchdog ----
+// Guarantees every session reaches a terminal state. A session stuck in
+// `starting` (subprocess never reported ready) or `running` (a turn making no
+// forward progress) is force-killed; a subprocess that died without delivering
+// an `exit` event is reaped through the canonical exit handler. Self-healing:
+// the timer re-arms across kill escalation, so `dead` is reached even when
+// every kill's `exit` event is lost.
+
+type WatchdogVector = 'stuck-starting' | 'running-stall' | 'fatal-kill'
+
+function clearWatchdog(session: Session): void {
+  if (session.watchdogTimer !== null) {
+    clearTimeout(session.watchdogTimer)
+    session.watchdogTimer = null
+  }
+  session.watchdogKillStage = 'none'
+}
+
+/** Arm (or re-arm) the watchdog for the session's current non-terminal state. */
+function armWatchdog(session: Session): void {
+  if (session.watchdogTimer !== null) clearTimeout(session.watchdogTimer)
+  const t = watchdogTimings()
+  let delay: number
+  if (session.terminalState === 'starting') delay = t.startingBoundMs
+  else if (session.terminalState === 'running') delay = t.runningStallMs
+  else {
+    session.watchdogTimer = null
+    return
+  }
+  session.watchdogTimer = setTimeout(() => fireWatchdog(session), delay)
+  session.watchdogTimer.unref?.()
+}
+
+/**
+ * Arm a short kill-grace tick after a SIGTERM (used by the fatal-error path)
+ * so the next fire escalates to SIGKILL regardless of the session's state.
+ */
+function armWatchdogForKill(session: Session): void {
+  if (session.watchdogTimer !== null) clearTimeout(session.watchdogTimer)
+  session.watchdogKillStage = 'sigterm'
+  session.watchdogTimer = setTimeout(() => fireWatchdog(session), watchdogTimings().killGraceMs)
+  session.watchdogTimer.unref?.()
+}
+
+function recordWatchdogFire(
+  session: Session,
+  vector: WatchdogVector,
+  outcome: 'no-child' | 'missed-exit' | 'alive',
+  killStage: Session['watchdogKillStage']
+): void {
+  try {
+    recordDiagnosticEvent({
+      level: 'warn',
+      source: 'main',
+      event: 'chat.watchdog_fired',
+      taskId: session.taskId,
+      sessionId: `${session.taskId}:${session.tabId}`,
+      message: `${vector} → ${outcome}`,
+      payload: {
+        vector,
+        outcome,
+        killStage,
+        terminalState: session.terminalState,
+        tabId: session.tabId,
+        mode: session.mode
+      }
+    })
+  } catch (err) {
+    console.error('[chat-transport] watchdog: recordDiagnosticEvent threw:', err)
+  }
+}
+
+function fireWatchdog(session: Session): void {
+  session.watchdogTimer = null
+  // Already terminal / replaced — nothing to do.
+  if (
+    session.ended ||
+    session.terminalState === 'dead' ||
+    sessions.get(session.tabId) !== session
+  ) {
+    clearWatchdog(session)
+    return
+  }
+  // When not mid-kill, only `starting`/`running` are watched. A session resting
+  // in `idle`/`error` is correct. Mid-kill (`watchdogKillStage !== 'none'`, set
+  // by the fatal-error path) proceeds regardless of state.
+  if (
+    session.watchdogKillStage === 'none' &&
+    session.terminalState !== 'starting' &&
+    session.terminalState !== 'running'
+  ) {
+    clearWatchdog(session)
+    return
+  }
+  const timings = watchdogTimings()
+  // `running` sliding-window recheck: a progress event may have landed after
+  // the timer was set — re-arm for the remainder instead of false-killing.
+  if (session.terminalState === 'running' && session.watchdogKillStage === 'none') {
+    const sinceProgress = Date.now() - session.watchdogLastProgress
+    if (sinceProgress < timings.runningStallMs) {
+      session.watchdogTimer = setTimeout(
+        () => fireWatchdog(session),
+        timings.runningStallMs - sinceProgress
+      )
+      session.watchdogTimer.unref?.()
+      return
+    }
+  }
+  const vector: WatchdogVector =
+    session.terminalState === 'starting'
+      ? 'stuck-starting'
+      : session.terminalState === 'running'
+        ? 'running-stall'
+        : 'fatal-kill'
+  const child = session.child
+  if (!child) {
+    recordWatchdogFire(session, vector, 'no-child', session.watchdogKillStage)
+    transitionState(session, 'dead')
+    clearWatchdog(session)
+    return
+  }
+  const pid = child.pid
+  const alive = typeof pid === 'number' ? deps.isProcessAlive(pid) : false
+  if (!alive) {
+    // Subprocess is dead but its `exit` event never arrived (missed-exit race)
+    // — reap it through the canonical exit handler, no teardown duplication.
+    recordWatchdogFire(session, vector, 'missed-exit', session.watchdogKillStage)
+    clearWatchdog(session)
+    try {
+      child.emit('exit', null, 'SIGKILL')
+    } catch (err) {
+      console.error('[chat-transport] watchdog: synthesized exit threw:', err)
+    }
+    return
+  }
+  // Alive past the bound — escalate one kill rung, then re-arm to verify.
+  recordWatchdogFire(session, vector, 'alive', session.watchdogKillStage)
+  try {
+    if (session.watchdogKillStage === 'none') {
+      child.kill('SIGTERM')
+      session.watchdogKillStage = 'sigterm'
+    } else if (session.watchdogKillStage === 'sigterm') {
+      child.kill('SIGKILL')
+      session.watchdogKillStage = 'sigkill'
+    }
+    // 'sigkill' already sent — keep re-probing; SIGKILL is uninterceptable so
+    // the process dies within a window or two and the next fire reaps it.
+  } catch (err) {
+    console.error('[chat-transport] watchdog: kill threw:', err)
+  }
+  session.watchdogTimer = setTimeout(() => fireWatchdog(session), timings.killGraceMs)
+  session.watchdogTimer.unref?.()
+}
+
 function transitionState(session: Session, next: ChatTerminalState): void {
   if (session.terminalState === next) return
+  // Leaving a watched state for a resting/terminal one — disarm.
+  if (next === 'idle' || next === 'error' || next === 'dead') {
+    clearWatchdog(session)
+  }
   const old = session.terminalState
   session.terminalState = next
   const stateSessionId = `${session.taskId}:${session.tabId}`
@@ -362,6 +568,19 @@ function commitEvent(session: Session, event: AgentEvent): void {
     }
   }
 
+  // Liveness watchdog: while `running`, (re)arm on the turn-opening events and
+  // on every forward-progress event. The reset makes the stall bound a sliding
+  // window so a long healthy turn is never false-killed; a turn that goes
+  // fully silent past the bound is force-killed.
+  if (session.terminalState === 'running') {
+    const opensTurn =
+      event.kind === 'user-message' || event.kind === 'turn-init' || event.kind === 'tool-call'
+    if (opensTurn || isProgressEventKind(event.kind)) {
+      session.watchdogLastProgress = Date.now()
+      armWatchdog(session)
+    }
+  }
+
   // Mark session as healthy once we see any real content.
   if (
     event.kind === 'assistant-text' ||
@@ -379,6 +598,35 @@ function commitEvent(session: Session, event: AgentEvent): void {
 }
 
 function handleEvent(session: Session, event: AgentEvent): void {
+  // Fatal driver-start failure (handshake could not complete). Unlike a resume
+  // failure — recoverable, respawns fresh — an `initialize` / `thread/start`
+  // failure has nowhere to go. Surface the error, then kill the subprocess so
+  // the existing exit path drives the session to its terminal `dead` state
+  // (Retry overlay). Without this the session lingers half-alive and silently
+  // queues any further input. Handled before the resume-tentative window so a
+  // fatal failure is never staged away as reconnect noise.
+  if (
+    event.kind === 'error' &&
+    typeof event.detail === 'object' &&
+    event.detail !== null &&
+    (event.detail as { fatal?: unknown }).fatal === true
+  ) {
+    commitEvent(session, event)
+    if (!session.ended && session.child) {
+      try {
+        session.child.kill('SIGTERM')
+      } catch {
+        /* already gone — the watchdog + exit handler still drive `dead` */
+      }
+      // Backstop: if SIGTERM is ignored, the watchdog escalates to SIGKILL
+      // and guarantees the session reaches `dead`.
+      armWatchdogForKill(session)
+    } else if (!session.ended) {
+      transitionState(session, 'dead')
+    }
+    return
+  }
+
   // Tentative-resume window: spawn was started with --resume <id> but we
   // haven't yet seen any signal the conversation actually loaded. Stage
   // events instead of persisting/broadcasting them. On the first healthy
@@ -452,6 +700,7 @@ async function respawnFresh(session: Session): Promise<void> {
   const carriedBuffer = [...session.buffer]
   const carriedNextSeq = session.nextSeq
   // Remove before re-hydrate so hydrateSession treats tabId as fresh.
+  clearWatchdog(session)
   sessions.delete(session.tabId)
   const nextOpts: CreateChatOpts = {
     ...session.respawnOpts,
@@ -616,7 +865,10 @@ export function hydrateSession(opts: CreateChatOpts): ChatSessionInfo {
     onInvalidResume: opts.onInvalidResume,
     staged: [],
     flushingStaged: false,
-    awaitingUserInput: false
+    awaitingUserInput: false,
+    watchdogTimer: null,
+    watchdogKillStage: 'none',
+    watchdogLastProgress: Date.now()
   }
   sessions.set(opts.tabId, session)
 
@@ -735,6 +987,8 @@ async function spawnSubprocess(session: Session): Promise<void> {
   // Move out of the lazy `not-spawned` state. `child.on('spawn')` below
   // promotes to `idle` once the kernel reports the pid.
   transitionState(session, 'starting')
+  // Watchdog: if the `spawn` event never arrives, force the session to `dead`.
+  armWatchdog(session)
 
   // Mint a fresh per-spawn protocol driver and build its IO context. The
   // driver owns ALL provider-protocol logic (handshake, line parsing,
@@ -818,6 +1072,10 @@ async function spawnSubprocess(session: Session): Promise<void> {
 
   // --- exit ---
   child.on('exit', (code, signal) => {
+    // Idempotent: the watchdog can synthesize an `exit` to reap a missed-exit
+    // race, and a late real `exit` may follow — process the teardown once.
+    if (session.ended) return
+    clearWatchdog(session)
     if (stderrTimer) {
       clearTimeout(stderrTimer)
       flushStderr()
@@ -1090,6 +1348,7 @@ export function kill(tabId: string): void {
 export function removeSession(tabId: string): void {
   const session = sessions.get(tabId)
   if (!session) return
+  clearWatchdog(session)
   if (!session.ended && session.child) kill(tabId)
   sessions.delete(tabId)
 }
@@ -1178,6 +1437,16 @@ export class ChatTransportError extends Error {
 
 /** For tests: inspect + clear state. */
 export function __resetForTests(): void {
+  for (const session of sessions.values()) clearWatchdog(session)
   sessions.clear()
   inFlightSpawns.clear()
+}
+
+/**
+ * Test-only: the OS subprocess for a tab. A real `child_process` emits `spawn`
+ * once the kernel reports the pid; tests drive a fake child and need this
+ * handle to fire `spawn` themselves (which is what triggers `driver.start`).
+ */
+export function __getSessionChildForTests(tabId: string): ChildProcess | null {
+  return sessions.get(tabId)?.child ?? null
 }

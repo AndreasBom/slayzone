@@ -43,6 +43,18 @@ run_test packages/domains/automations/src/shared/ai.test.ts
 run_test packages/domains/automations/src/main/handlers.test.ts
 run_test packages/domains/automations/src/main/engine.test.ts
 
+# Terminal — SGR stripping + WebGL renderer lifecycle
+run_test packages/domains/terminal/src/main/filter-buffer-data.test.ts
+run_test packages/domains/terminal/src/client/webgl-loader.test.ts
+
+# Terminal — Codex Chat (codex-chat mode) driver + transport + adapter
+run_test packages/domains/terminal/src/main/agents/codex/codex-app-server-client.test.ts
+run_test packages/domains/terminal/src/main/agents/codex/codex-chat-session.test.ts
+run_test packages/domains/terminal/src/main/adapters/codex-adapter.test.ts
+
+# Terminal — chat transport manager (session lifecycle + liveness watchdog)
+run_test packages/domains/terminal/src/main/chat-transport-manager.test.ts
+
 run_test_no_loader() {
   echo ""
   echo "=== $1 (integration) ==="
