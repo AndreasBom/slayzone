@@ -29,7 +29,15 @@ Companion to [`REMOTE-SSH-SPEC.md`](./REMOTE-SSH-SPEC.md). This document is the 
 | **Phase 2 (refactor)** — `execGit` / `execGitFileList` route through `runGit` so optional `executionContext` propagates to every downstream call site without changing them | `44c6634e` | ✅ |
 | **Phase 2 step 3** — `git:probeRepo(projectId)` IPC handler + renderer migration (Git tab no longer says "Not a git repository" for remote SSH projects) | `68adf646` | ✅ |
 | **Phase 2 step 2** — thread optional `projectId` through 7 Git-tab read APIs (`getCurrentBranch`, `listBranches`, `hasUncommittedChanges`, `getRecentCommits`, `getStatusSummary`, `getRemoteUrl`, `getAheadBehindUpstream`); handlers resolve `executionContext` from project; `useConsolidatedGeneralData` threads `task.project_id` | `ec27fb53` | ✅ |
-| **Phase 3 (read path)** — `ssh-fs.ts` module with `sshReadDir` + `sshReadFile`; `fs:readDir` / `fs:readFile` IPC accept optional `projectId` and route via ssh when context is ssh; `EditorFileTree` / `FileEditorView` thread `task.project_id`. File-write paths intentionally still host-only | uncommitted | 🟡 needs commit |
+| **Phase 3 (read path)** — `ssh-fs.ts` module with `sshReadDir` + `sshReadFile`; `fs:readDir` / `fs:readFile` IPC accept optional `projectId` and route via ssh when context is ssh; `EditorFileTree` / `FileEditorView` thread `task.project_id`. File-write paths intentionally still host-only | `153ed223` | ✅ |
+| **Phase 5 (probe extension)** — `testExecutionContext` now probes `tmux`, `curl`, `jq`, **and** `git` on the remote in one round-trip, with an apt/dnf install-hint inline so Project Settings → Test Connection gives actionable errors | uncommitted | 🟡 needs commit |
+
+### Still open in plan after this session
+
+- **Phase 2 write path** — branch checkout / commit / stage / push / pull / merge / rebase are still host-only. Pattern is identical to Phase 2 read path: add optional `projectId`, resolve context in handler, thread to `execGit({ cwd, executionContext })`.
+- **Phase 3 writes + watch** — `fs:writeFile` / `fs:createFile` / `fs:createDir` / `fs:rename` / `fs:delete` / `fs:copy` / `fs:watch` / `fs:gitStatus` / `fs:searchFiles` / `fs:listAllFiles` all still go through local-fs. Plan suggested polling watch over ssh; not yet wired.
+- **Phase 4 (artifacts on remote)** — neither the `slay artifact upload` CLI helper nor the `/api/artifact/upload` REST endpoint exist yet. Recommended Option A from the plan.
+- **Phase 5 remaining** — stable MCP port across dev restarts, status-indicator UX when remote hooks fail, stale-tmux cleanup on project delete / host change, README "Working remote" section.
 
 ### Uncommitted at time of writing
 

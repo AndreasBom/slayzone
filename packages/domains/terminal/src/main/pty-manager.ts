@@ -500,19 +500,28 @@ export function testExecutionContext(
     }
 
     const cmd = context.type === 'docker' ? 'docker' : 'ssh'
-    // For SSH we also probe `tmux` so the user gets a clear error up-front if
-    // the remote is missing tmux — sessions wrap in `tmux new-session` and
-    // would otherwise fail opaquely on first spawn.
+    // For SSH we probe the full remote toolchain so missing deps surface in
+    // Project Settings with an actionable install hint, not as an opaque
+    // first-spawn failure. Required:
+    //   - tmux : sessions wrap in `tmux new-session -A`
+    //   - curl : notify.sh posts hook events via curl
+    //   - jq   : slay-proxy uses jq for safe argv → JSON encoding
+    //   - git  : runGit + git tab over ssh
+    const sshProbeScript = [
+      'missing=""',
+      'for t in tmux curl jq git; do',
+      '  command -v "$t" >/dev/null 2>&1 || missing="$missing $t"',
+      'done',
+      'if [ -n "$missing" ]; then',
+      '  echo "missing on remote:$missing — install via apt install$missing or dnf install$missing" 1>&2',
+      '  exit 1',
+      'fi',
+      'echo ok'
+    ].join('; ')
     const args =
       context.type === 'docker'
         ? ['exec', '--', context.container, 'echo', 'ok']
-        : [
-            '-o',
-            'ConnectTimeout=5',
-            '--',
-            context.target,
-            'command -v tmux >/dev/null 2>&1 && echo ok || (echo "tmux not found on remote host" 1>&2; exit 1)'
-          ]
+        : ['-o', 'ConnectTimeout=5', '--', context.target, sshProbeScript]
 
     execFile(cmd, args, { timeout: 10_000 }, (err, _stdout, stderr) => {
       if (err) {
