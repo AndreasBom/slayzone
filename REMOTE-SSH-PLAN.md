@@ -22,31 +22,29 @@ Companion to [`REMOTE-SSH-SPEC.md`](./REMOTE-SSH-SPEC.md). This document is the 
 | `CreateProjectDialog` "On a remote machine (SSH)" option (host + remote workdir + shell + Test connection) | `eabed3d5` | ✅ |
 | Skip local `pathExists` check when `execution_context.type !== 'host'` | `eabed3d5` | ✅ |
 | `notify.sh` Windows path normalized to forward slashes | `3c6c7b56` | ✅ |
-| Remote agent-hook installer (`~/.slayzone/hooks/notify.sh` + `~/.claude/settings.json` patch over ssh) — wired into `createPty` via `setRemoteHookInstaller` injection | uncommitted | 🟡 needs commit |
-| Reverse forward target uses `127.0.0.1` instead of `localhost` so Windows OpenSSH does not try `::1` first against an IPv4-only Express server | uncommitted | 🟡 needs commit |
+| Remote agent-hook installer (`~/.slayzone/hooks/notify.sh` + `~/.claude/settings.json` patch over ssh) — wired into `createPty` via `setRemoteHookInstaller` injection | `d6059eca` | ✅ |
+| Reverse forward target uses `127.0.0.1` instead of `localhost` so Windows OpenSSH does not try `::1` first against an IPv4-only Express server | `d6059eca` | ✅ |
+| **Phase 1 — `slay` CLI proxy on remote** (`/api/cli/exec` endpoint + `slay-proxy.sh` deployed on remote + `~/.slayzone/bin` prepended to remote PATH) | `9d17b4c8` | ✅ |
+| **Phase 2 step 1** — transport-aware git command builder (`runGit`, `buildGitCommand`, `posixQuote`, `resolveProjectExecutionContext`, `resolveSshExecutable`) — no consumer migration yet | uncommitted | 🟡 needs commit |
 
 ### Uncommitted at time of writing
 
-The working tree contains the remote-hook-installer + the `localhost` → `127.0.0.1` fix in `transport-spawn.ts`. Pick these up first.
+`runGit` adapter foundation (Phase 2 step 1) sits uncommitted on `feature/remote-access`:
 
 ```
-packages/apps/app/src/main/agent-hooks/remote-hook-installer.ts   (new)
-packages/apps/app/src/main/index.ts                                (wires setRemoteHookInstaller)
-packages/domains/terminal/src/main/index.ts                        (re-export)
-packages/domains/terminal/src/main/pty-manager.ts                  (calls injected installer pre-spawn, adds AgentId/HOOK_SUPPORTED_AGENT_IDS imports)
-packages/domains/terminal/src/main/transport-spawn.ts              (127.0.0.1 fix)
+packages/domains/worktrees/src/main/run-git.ts        (new)
+packages/domains/worktrees/src/main/run-git.test.ts   (new)
 ```
 
 Suggested commit:
 
 ```
-feat(terminal): auto-deploy claude lifecycle hooks to remote SSH host
+feat(worktrees): transport-aware runGit adapter (Phase 2 step 1)
 
-When a project's execution_context is ssh, push notify.sh +
-~/.claude/settings.json to the remote before spawning so claude's
-hooks reach SlayZone over the reverse-forwarded MCP loopback. Resolve
-the reverse-forward target to 127.0.0.1 explicitly so Windows OpenSSH
-does not race to ::1 against an IPv4-only Express server.
+Foundation for git over ssh. No callsite migration yet — existing
+execGit() consumers continue to work locally. Subsequent commits will
+migrate git-watcher, branch-ops, diff, and log to runGit so the Git
+tab works against a remote working tree.
 ```
 
 ## Known remaining gaps (visible to the user today)
