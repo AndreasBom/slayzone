@@ -507,17 +507,18 @@ export function testExecutionContext(
     //   - curl : notify.sh posts hook events via curl
     //   - jq   : slay-proxy uses jq for safe argv → JSON encoding
     //   - git  : runGit + git tab over ssh
-    const sshProbeScript = [
-      'missing=""',
-      'for t in tmux curl jq git; do',
-      '  command -v "$t" >/dev/null 2>&1 || missing="$missing $t"',
-      'done',
-      'if [ -n "$missing" ]; then',
-      '  echo "missing on remote:$missing — install via apt install$missing or dnf install$missing" 1>&2',
-      '  exit 1',
-      'fi',
+    // One-liner remote script. Bash does NOT accept `;` after `do` or `then`,
+    // so we build the loop / conditional manually instead of `.join('; ')`.
+    const sshProbeScript =
+      'missing=""; ' +
+      'for t in tmux curl jq git; do ' +
+      'command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; ' +
+      'done; ' +
+      'if [ -n "$missing" ]; then ' +
+      'echo "missing on remote:$missing — install via apt install$missing or dnf install$missing" 1>&2; ' +
+      'exit 1; ' +
+      'fi; ' +
       'echo ok'
-    ].join('; ')
     const args =
       context.type === 'docker'
         ? ['exec', '--', context.container, 'echo', 'ok']
