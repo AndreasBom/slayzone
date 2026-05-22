@@ -15,6 +15,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import { loadWebglRenderer } from './webgl-loader'
+import { diag } from './terminal-webgl-diag'
 import '@xterm/xterm/css/xterm.css'
 
 // Strip trailing whitespace from each line of selection text.
@@ -409,6 +410,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
             const prevCols = cached.terminal.cols
             const prevRows = cached.terminal.rows
             cached.fitAddon.fit()
+            diag(sessionId, 'fit', { site: 'reattach', terminal: cached.terminal })
             // Only resize PTY if dimensions actually changed (avoids spurious SIGWINCH)
             if (cached.terminal.cols !== prevCols || cached.terminal.rows !== prevRows) {
               window.api.pty.resize(sessionId, cached.terminal.cols, cached.terminal.rows)
@@ -422,6 +424,10 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
               try {
                 cached.webglAddon.clearTextureAtlas()
                 cached.terminal.refresh(0, cached.terminal.rows - 1)
+                diag(sessionId, 'atlas-correct', {
+                  site: 'reattach',
+                  terminal: cached.terminal
+                })
               } catch {
                 /* terminal disposed */
               }
@@ -626,6 +632,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
         terminal.clear() // Ensure terminal starts completely fresh
         // Simple fit - container is guaranteed to have dimensions from waitForDimensions
         fitAddon.fit()
+        diag(sessionId, 'fit', { site: 'init', terminal })
 
         // WebGL renderer — 5-10x faster than the DOM renderer.
         // Safe because filterBufferData() strips SGR 4 (underline) codes server-side
@@ -648,7 +655,8 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
               webglAddonRef.current = addon
             },
             requestFrame: (cb) => requestAnimationFrame(cb),
-            requestTimeout: (cb, ms) => window.setTimeout(cb, ms)
+            requestTimeout: (cb, ms) => window.setTimeout(cb, ms),
+            sessionId
           })
         })
 
@@ -977,6 +985,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     return window.api.pty.onResizeNeeded((sid) => {
       if (sid !== sessionId || !fitAddonRef.current || !terminalRef.current) return
       fitAddonRef.current.fit()
+      diag(sessionId, 'fit', { site: 'resize-needed', terminal: terminalRef.current })
       window.api.pty.resize(sessionId, terminalRef.current.cols, terminalRef.current.rows)
     })
   }, [sessionId])
@@ -1062,6 +1071,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
       }
 
       fitAddonRef.current?.fit()
+      diag(sessionId, 'fit', { site: 'resize-observer', terminal: terminalRef.current })
     }
 
     window.addEventListener('resize', handleResize)
@@ -1074,7 +1084,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
       window.removeEventListener('resize', handleResize)
       observer.disconnect()
     }
-  }, [initTerminal])
+  }, [initTerminal, sessionId])
 
   // Update font size at runtime when setting changes
   useEffect(() => {
@@ -1082,7 +1092,8 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     if (!t) return
     t.options.fontSize = terminalFontSize
     fitAddonRef.current?.fit()
-  }, [terminalFontSize])
+    diag(sessionId, 'fit', { site: 'font-size', terminal: t })
+  }, [terminalFontSize, sessionId])
 
   // Update font family at runtime
   useEffect(() => {
@@ -1090,7 +1101,8 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     if (!t) return
     t.options.fontFamily = terminalFontFamily
     fitAddonRef.current?.fit()
-  }, [terminalFontFamily])
+    diag(sessionId, 'fit', { site: 'font-family', terminal: t })
+  }, [terminalFontFamily, sessionId])
 
   // Update scrollback buffer at runtime.
   useEffect(() => {

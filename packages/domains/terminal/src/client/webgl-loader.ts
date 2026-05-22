@@ -1,5 +1,6 @@
 import type { Terminal as XTerm } from '@xterm/xterm'
 import type { WebglAddon } from '@xterm/addon-webgl'
+import { diag } from './terminal-webgl-diag'
 
 /**
  * Dependencies for {@link loadWebglRenderer}. Everything the routine touches is
@@ -25,6 +26,8 @@ export interface LoadWebglOptions {
   requestFrame: (cb: () => void) => void
   /** Schedules a delayed post-load atlas correction (production: `setTimeout`). */
   requestTimeout: (cb: () => void, ms: number) => void
+  /** Session id — diagnostics only (TEMPORARY, see terminal-webgl-diag.ts). */
+  sessionId?: string
 }
 
 /** Delays (ms after load) of the straggler atlas corrections — see {@link loadWebglRenderer}. */
@@ -67,8 +70,11 @@ export function loadWebglRenderer(opts: LoadWebglOptions): void {
     return
   }
 
+  const sid = opts.sessionId ?? 'unknown'
+
   addon.onContextLoss(() => {
     console.warn('[terminal] WebGL context lost, falling back to DOM renderer')
+    diag(sid, 'webgl-context-loss', { terminal: opts.terminal })
     addon.dispose()
     if (opts.getActiveAddon() === addon) opts.setActiveAddon(null)
     // Repaint every visible row — the DOM renderer takes over but won't redraw
@@ -82,6 +88,7 @@ export function loadWebglRenderer(opts: LoadWebglOptions): void {
 
   opts.terminal.loadAddon(addon)
   opts.setActiveAddon(addon)
+  diag(sid, 'webgl-load', { terminal: opts.terminal })
 
   // Cold-start correction — re-rasterize the atlas across a short startup window
   // so a paint made before DPR/geometry settled does not stay scrambled. The
@@ -94,6 +101,7 @@ export function loadWebglRenderer(opts: LoadWebglOptions): void {
     try {
       addon.clearTextureAtlas()
       opts.terminal.refresh(0, opts.terminal.rows - 1)
+      diag(sid, 'atlas-correct', { terminal: opts.terminal })
     } catch {
       /* terminal disposed between schedules */
     }
