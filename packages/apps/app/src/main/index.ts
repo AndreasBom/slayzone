@@ -115,9 +115,11 @@ app.commandLine.appendSwitch('tls-use-system-ca')
 // the #1 signal BotGuard uses to block Google sign-in.
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
 
-// Enable remote debugging in dev (port 0 = OS-assigned, avoids conflicts with other dev instances)
+// Enable remote debugging in dev (port 0 = OS-assigned, avoids conflicts with other dev instances).
+// SLAYZONE_DEVTOOLS_PORT pins it to a known port so external CDP clients (Electron MCP, scripts) can attach.
 if (is.dev && !isPlaywright) {
-  app.commandLine.appendSwitch('remote-debugging-port', '0')
+  const port = process.env.SLAYZONE_DEVTOOLS_PORT ?? '0'
+  app.commandLine.appendSwitch('remote-debugging-port', port)
 }
 
 // Raise renderer V8 heap. React 19 dev-mode `logComponentRender` calls
