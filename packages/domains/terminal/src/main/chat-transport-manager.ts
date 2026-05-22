@@ -3,13 +3,24 @@ import { randomUUID } from 'node:crypto'
 import readline from 'node:readline'
 import type { AgentEvent } from '../shared/agent-events'
 import type { ChatSessionStateEntry } from '../shared/types'
-import type { AgentAdapter } from './agents/types'
-import { getAdapter } from './agents/registry'
+import type {
+  AgentBackend,
+  ChatDriverContext,
+  ChatSessionDriver,
+  PermissionDecision
+} from './agents/types'
+import { getBackend } from './agents/registry'
 import { whichBinary as realWhichBinary } from './shell-env'
+import { recordDiagnosticEvent } from '@slayzone/diagnostics/main'
 import type { BufferedEvent } from './chat-events-store'
-import type { ChatMode } from '../shared/chat-mode'
-import type { ChatModel } from '../shared/chat-model'
+// `chatMode` is an opaque, provider-specific runtime/permission mode id
+// (Claude `ChatMode` for claude-chat, Codex runtime mode for codex-chat) —
+// typed `string`. `shared/chat-mode-catalog.ts` owns the per-mode vocabulary.
+// `chatModel` is an opaque, provider-specific model id (`claude --model`
+// alias for claude-chat, Codex model id for codex-chat) — typed as `string`.
+// The provider-aware catalog (`shared/chat-model-catalog.ts`) owns validity.
 import type { ChatEffort } from '../shared/chat-effort'
+import type { ChatCollaborationMode } from '../shared/chat-collaboration'
 import { markSessionUserInput, clearSessionUserInputMark } from './user-input-tracker'
 
 export { markSessionUserInput }
@@ -61,6 +72,13 @@ export interface TransportDeps {
    * survives full Electron app reload.
    */
   persistEvent: (tabId: string, seq: number, event: AgentEvent) => void
+  /**
+   * Non-destructive process-liveness probe (`process.kill(pid, 0)`-style).
+   * Injected so the watchdog tests can control the verdict deterministically.
+   */
+  isProcessAlive: (pid: number) => boolean
+  /** Optional watchdog timeout override — tests set tiny values to avoid real waits. */
+  watchdogTimings?: { startingBoundMs: number; runningStallMs: number; killGraceMs: number }
 }
 
 /**
@@ -81,7 +99,9 @@ function electronBroadcast(
     }
   } catch {
     // Non-electron context (tests run under tsx). No-op broadcast.
-    return () => {}
+    return () => {
+      // no-op
+    }
   }
 }
 
@@ -99,6 +119,14 @@ const defaultDeps: TransportDeps = {
   },
   persistEvent: () => {
     // No-op default: persistence is wired in main via configureTransport().
+  },
+  isProcessAlive: (pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
   }
 }
 
@@ -124,12 +152,28 @@ export function setSpawnedTabRecorder(fn: SpawnedSetter | null): void {
 /**
  * Shutdown gate. When true, the exit handler does NOT clear `was_spawned`
  * so the next boot can auto-restart this chat session. Composition root
- * MUST set this true in `will-quit` before calling `shutdownChatTransports`.
+ * MUST set this true during app quit before calling `shutdownChatTransports`.
  */
 let isShuttingDown = false
 export function setShuttingDown(v: boolean): void {
   isShuttingDown = v
 }
+
+export interface ShutdownOptions {
+  termGraceMs?: number
+  hardTimeoutMs?: number
+}
+
+export interface TransportShutdownResult {
+  total: number
+  exited: number
+  killed: number
+  timedOut: number
+  errors: Array<{ id: string; phase: string; message: string }>
+}
+
+const DEFAULT_SHUTDOWN_TERM_GRACE_MS = 1500
+const DEFAULT_SHUTDOWN_HARD_TIMEOUT_MS = 5000
 
 /** Production-side dep injection (e.g. wire persistEvent to SQLite at startup). */
 export function configureTransport(override: Partial<TransportDeps>): void {
@@ -156,17 +200,15 @@ export interface ChatSessionInfo {
    * don't track a permission mode. Renderer prefers this over `chat:getMode`
    * (DB cache) on mount when a session exists.
    */
-  chatMode?: ChatMode | null
-  /** Resolved chat model alias this session was spawned with. */
-  chatModel?: ChatModel | null
+  chatMode?: string | null
+  /** Resolved chat model id this session was spawned with. */
+  chatModel?: string | null
   /** Resolved reasoning effort this session was spawned with. `null` = inherit. */
   chatEffort?: ChatEffort | null
-}
-
-interface PendingControl {
-  resolve: (data: unknown) => void
-  reject: (err: Error) => void
-  timer: NodeJS.Timeout
+  /** Resolved collaboration mode this session was spawned with. `null` = provider default. */
+  chatCollaboration?: ChatCollaborationMode | null
+  /** Whether Codex Fast Mode was enabled for this session's spawn. */
+  chatFastMode?: boolean
 }
 
 interface Session {
@@ -183,7 +225,12 @@ interface Session {
   taskId: string
   mode: string
   cwd: string
-  adapter: AgentAdapter
+  backend: AgentBackend
+  /**
+   * Per-spawn protocol driver. Null while the session is `not-spawned`;
+   * created in `spawnSubprocess` and disposed in the `exit` handler.
+   */
+  driver: ChatSessionDriver | null
   /**
    * The OS subprocess. Null when the session is hydrated-only (`not-spawned`
    * state) — buffer + metadata exist, but no child has been started. Set by
@@ -206,19 +253,15 @@ interface Session {
   /** Opts needed to respawn. */
   respawnOpts: CreateChatOpts
   /** Resolved chat permission mode this session was spawned with. */
-  chatMode: ChatMode | null
-  /** Resolved chat model alias this session was spawned with. */
-  chatModel: ChatModel | null
+  chatMode: string | null
+  /** Resolved chat model id this session was spawned with. */
+  chatModel: string | null
   /** Resolved reasoning effort this session was spawned with. */
   chatEffort: ChatEffort | null
-  /**
-   * In-flight `control_request` promises, keyed by request_id. Transport
-   * resolves on matching `control_response` from the adapter. Cleared on
-   * session end / process exit (any pending promises reject).
-   */
-  pendingControl: Map<string, PendingControl>
-  /** Monotonic counter for generating unique request_ids per session. */
-  controlReqCounter: number
+  /** Resolved collaboration mode this session was spawned with. */
+  chatCollaboration: ChatCollaborationMode | null
+  /** Whether Codex Fast Mode was enabled for this session's spawn. */
+  chatFastMode: boolean
   onPersistSessionId?: (id: string) => void
   onInvalidResume?: () => void
   /**
@@ -232,6 +275,15 @@ interface Session {
   /** Re-entry guard: true while flushing `staged` through `commitEvent`. */
   flushingStaged: boolean
   /**
+   * Liveness watchdog — a single recurring timer that forces a session stuck
+   * in `starting`/`running` to a terminal state. `null` when disarmed.
+   */
+  watchdogTimer: ReturnType<typeof setTimeout> | null
+  /** Kill-escalation ladder position for the watchdog. */
+  watchdogKillStage: 'none' | 'sigterm' | 'sigkill'
+  /** Timestamp (ms) of the last forward-progress signal while `running`. */
+  watchdogLastProgress: number
+  /**
    * True while the CLI is parked on an inbound `permission-request` (e.g.
    * AskUserQuestion). Drives the idle flip so tab indicators / kanban /
    * automations see "waiting on user", but also gates the queue drainer:
@@ -244,6 +296,29 @@ interface Session {
 
 const MAX_BUFFER_EVENTS = 2000
 const STDERR_FLUSH_INTERVAL_MS = 100
+
+// Liveness watchdog — guarantees a session always reaches a terminal state.
+// `starting`: max wait for the subprocess to report ready (mirrors the xterm
+// watchdog). `running`: max time with NO forward progress — a sliding window
+// reset by every progress event, so a long healthy turn is never false-killed.
+// `kill grace`: wait after a SIGTERM before escalating to SIGKILL.
+const WATCHDOG_STARTING_BOUND_MS = 20_000
+const WATCHDOG_RUNNING_STALL_MS = 300_000
+const WATCHDOG_KILL_GRACE_MS = 2_000
+
+function watchdogTimings(): {
+  startingBoundMs: number
+  runningStallMs: number
+  killGraceMs: number
+} {
+  return (
+    deps.watchdogTimings ?? {
+      startingBoundMs: WATCHDOG_STARTING_BOUND_MS,
+      runningStallMs: WATCHDOG_RUNNING_STALL_MS,
+      killGraceMs: WATCHDOG_KILL_GRACE_MS
+    }
+  )
+}
 
 const sessions = new Map<string, Session>()
 
@@ -263,8 +338,166 @@ function appendToBuffer(session: Session, event: AgentEvent): number {
   return seq
 }
 
+// ---- liveness watchdog ----
+// Guarantees every session reaches a terminal state. A session stuck in
+// `starting` (subprocess never reported ready) or `running` (a turn making no
+// forward progress) is force-killed; a subprocess that died without delivering
+// an `exit` event is reaped through the canonical exit handler. Self-healing:
+// the timer re-arms across kill escalation, so `dead` is reached even when
+// every kill's `exit` event is lost.
+
+type WatchdogVector = 'stuck-starting' | 'running-stall' | 'fatal-kill'
+
+function clearWatchdog(session: Session): void {
+  if (session.watchdogTimer !== null) {
+    clearTimeout(session.watchdogTimer)
+    session.watchdogTimer = null
+  }
+  session.watchdogKillStage = 'none'
+}
+
+/** Arm (or re-arm) the watchdog for the session's current non-terminal state. */
+function armWatchdog(session: Session): void {
+  if (session.watchdogTimer !== null) clearTimeout(session.watchdogTimer)
+  const t = watchdogTimings()
+  let delay: number
+  if (session.terminalState === 'starting') delay = t.startingBoundMs
+  else if (session.terminalState === 'running') delay = t.runningStallMs
+  else {
+    session.watchdogTimer = null
+    return
+  }
+  session.watchdogTimer = setTimeout(() => fireWatchdog(session), delay)
+  session.watchdogTimer.unref?.()
+}
+
+/**
+ * Arm a short kill-grace tick after a SIGTERM (used by the fatal-error path)
+ * so the next fire escalates to SIGKILL regardless of the session's state.
+ */
+function armWatchdogForKill(session: Session): void {
+  if (session.watchdogTimer !== null) clearTimeout(session.watchdogTimer)
+  session.watchdogKillStage = 'sigterm'
+  session.watchdogTimer = setTimeout(() => fireWatchdog(session), watchdogTimings().killGraceMs)
+  session.watchdogTimer.unref?.()
+}
+
+function recordWatchdogFire(
+  session: Session,
+  vector: WatchdogVector,
+  outcome: 'no-child' | 'missed-exit' | 'alive',
+  killStage: Session['watchdogKillStage']
+): void {
+  try {
+    recordDiagnosticEvent({
+      level: 'warn',
+      source: 'main',
+      event: 'chat.watchdog_fired',
+      taskId: session.taskId,
+      sessionId: `${session.taskId}:${session.tabId}`,
+      message: `${vector} → ${outcome}`,
+      payload: {
+        vector,
+        outcome,
+        killStage,
+        terminalState: session.terminalState,
+        tabId: session.tabId,
+        mode: session.mode
+      }
+    })
+  } catch (err) {
+    console.error('[chat-transport] watchdog: recordDiagnosticEvent threw:', err)
+  }
+}
+
+function fireWatchdog(session: Session): void {
+  session.watchdogTimer = null
+  // Already terminal / replaced — nothing to do.
+  if (
+    session.ended ||
+    session.terminalState === 'dead' ||
+    sessions.get(session.tabId) !== session
+  ) {
+    clearWatchdog(session)
+    return
+  }
+  // When not mid-kill, only `starting`/`running` are watched. A session resting
+  // in `idle`/`error` is correct. Mid-kill (`watchdogKillStage !== 'none'`, set
+  // by the fatal-error path) proceeds regardless of state.
+  if (
+    session.watchdogKillStage === 'none' &&
+    session.terminalState !== 'starting' &&
+    session.terminalState !== 'running'
+  ) {
+    clearWatchdog(session)
+    return
+  }
+  const timings = watchdogTimings()
+  // `running` sliding-window recheck: a progress event may have landed after
+  // the timer was set — re-arm for the remainder instead of false-killing.
+  if (session.terminalState === 'running' && session.watchdogKillStage === 'none') {
+    const sinceProgress = Date.now() - session.watchdogLastProgress
+    if (sinceProgress < timings.runningStallMs) {
+      session.watchdogTimer = setTimeout(
+        () => fireWatchdog(session),
+        timings.runningStallMs - sinceProgress
+      )
+      session.watchdogTimer.unref?.()
+      return
+    }
+  }
+  const vector: WatchdogVector =
+    session.terminalState === 'starting'
+      ? 'stuck-starting'
+      : session.terminalState === 'running'
+        ? 'running-stall'
+        : 'fatal-kill'
+  const child = session.child
+  if (!child) {
+    recordWatchdogFire(session, vector, 'no-child', session.watchdogKillStage)
+    transitionState(session, 'dead')
+    clearWatchdog(session)
+    return
+  }
+  const pid = child.pid
+  const alive = typeof pid === 'number' ? deps.isProcessAlive(pid) : false
+  if (!alive) {
+    // Subprocess is dead but its `exit` event never arrived (missed-exit race)
+    // — reap it through the canonical exit handler, no teardown duplication.
+    recordWatchdogFire(session, vector, 'missed-exit', session.watchdogKillStage)
+    clearWatchdog(session)
+    try {
+      child.emit('exit', null, 'SIGKILL')
+    } catch (err) {
+      console.error('[chat-transport] watchdog: synthesized exit threw:', err)
+    }
+    return
+  }
+  // Alive past the bound — escalate one kill rung, then re-arm to verify.
+  recordWatchdogFire(session, vector, 'alive', session.watchdogKillStage)
+  try {
+    if (session.watchdogKillStage === 'none') {
+      child.kill('SIGTERM')
+      session.watchdogKillStage = 'sigterm'
+    } else if (session.watchdogKillStage === 'sigterm') {
+      child.kill('SIGKILL')
+      session.watchdogKillStage = 'sigkill'
+    }
+    // 'sigkill' already sent — keep re-probing; SIGKILL is uninterceptable so
+    // the process dies within a window or two and the next fire reaps it.
+  } catch (err) {
+    console.error('[chat-transport] watchdog: kill threw:', err)
+  }
+  session.watchdogTimer = setTimeout(() => fireWatchdog(session), timings.killGraceMs)
+  session.watchdogTimer.unref?.()
+}
+
 function transitionState(session: Session, next: ChatTerminalState): void {
   if (session.terminalState === next) return
+  // Leaving a watched state for a resting/terminal one — disarm.
+  if (next === 'idle' || next === 'error' || next === 'dead') {
+    clearWatchdog(session)
+  }
   const old = session.terminalState
   session.terminalState = next
   const stateSessionId = `${session.taskId}:${session.tabId}`
@@ -353,12 +586,31 @@ function commitEvent(session: Session, event: AgentEvent): void {
     ) {
       session.awaitingUserInput = false
     }
-    if (event.kind === 'user-message' || event.kind === 'turn-init' || event.kind === 'tool-call') {
+    // `turn-init` is session metadata (id/model/cwd/tools), NOT a turn-open
+    // signal. Claude's SDK emits it mid-first-turn so it *looks* turn-aligned,
+    // but Codex's driver emits a synthetic one at handshake — before any turn.
+    // Treating it as turn-open left Codex sessions stuck `running` post-spawn/
+    // -resume. A real turn always opens with the transport-synthesized
+    // `user-message` (every dispatch path routes through `sendUserMessage`);
+    // `tool-call` stays as a mid-turn safety net.
+    if (event.kind === 'user-message' || event.kind === 'tool-call') {
       transitionState(session, 'running')
     } else if (event.kind === 'result') {
       transitionState(session, event.isError ? 'error' : 'idle')
     } else if (event.kind === 'process-exit') {
       transitionState(session, 'dead')
+    }
+  }
+
+  // Liveness watchdog: while `running`, (re)arm on the turn-opening events and
+  // on every forward-progress event. The reset makes the stall bound a sliding
+  // window so a long healthy turn is never false-killed; a turn that goes
+  // fully silent past the bound is force-killed.
+  if (session.terminalState === 'running') {
+    const opensTurn = event.kind === 'user-message' || event.kind === 'tool-call'
+    if (opensTurn || isProgressEventKind(event.kind)) {
+      session.watchdogLastProgress = Date.now()
+      armWatchdog(session)
     }
   }
 
@@ -372,13 +624,42 @@ function commitEvent(session: Session, event: AgentEvent): void {
   }
 
   // Surface discovered session id for persistence (resume-on-reopen).
-  const extracted = session.adapter.extractSessionId(event)
+  const extracted = session.driver?.extractSessionId(event) ?? null
   if (extracted && session.onPersistSessionId) {
     session.onPersistSessionId(extracted)
   }
 }
 
 function handleEvent(session: Session, event: AgentEvent): void {
+  // Fatal driver-start failure (handshake could not complete). Unlike a resume
+  // failure — recoverable, respawns fresh — an `initialize` / `thread/start`
+  // failure has nowhere to go. Surface the error, then kill the subprocess so
+  // the existing exit path drives the session to its terminal `dead` state
+  // (Retry overlay). Without this the session lingers half-alive and silently
+  // queues any further input. Handled before the resume-tentative window so a
+  // fatal failure is never staged away as reconnect noise.
+  if (
+    event.kind === 'error' &&
+    typeof event.detail === 'object' &&
+    event.detail !== null &&
+    (event.detail as { fatal?: unknown }).fatal === true
+  ) {
+    commitEvent(session, event)
+    if (!session.ended && session.child) {
+      try {
+        session.child.kill('SIGTERM')
+      } catch {
+        /* already gone — the watchdog + exit handler still drive `dead` */
+      }
+      // Backstop: if SIGTERM is ignored, the watchdog escalates to SIGKILL
+      // and guarantees the session reaches `dead`.
+      armWatchdogForKill(session)
+    } else if (!session.ended) {
+      transitionState(session, 'dead')
+    }
+    return
+  }
+
   // Tentative-resume window: spawn was started with --resume <id> but we
   // haven't yet seen any signal the conversation actually loaded. Stage
   // events instead of persisting/broadcasting them. On the first healthy
@@ -452,6 +733,7 @@ async function respawnFresh(session: Session): Promise<void> {
   const carriedBuffer = [...session.buffer]
   const carriedNextSeq = session.nextSeq
   // Remove before re-hydrate so hydrateSession treats tabId as fresh.
+  clearWatchdog(session)
   sessions.delete(session.tabId)
   const nextOpts: CreateChatOpts = {
     ...session.respawnOpts,
@@ -515,15 +797,19 @@ export interface CreateChatOpts {
    */
   initialNextSeq?: number
   /**
-   * Resolved chat permission mode this spawn corresponds to. Stored on the
-   * Session and surfaced via ChatSessionInfo. When null, adapter doesn't
-   * use a permission-mode concept (non-claude agents).
+   * Resolved chat permission/runtime mode this spawn corresponds to. Stored
+   * on the Session and surfaced via ChatSessionInfo. When null, the provider
+   * doesn't use a mode concept.
    */
-  chatMode?: ChatMode | null
-  /** Resolved chat model alias for the spawn (claude --model). */
-  chatModel?: ChatModel | null
+  chatMode?: string | null
+  /** Resolved chat model id for the spawn (provider-specific). */
+  chatModel?: string | null
   /** Resolved reasoning effort for the spawn (claude --effort). */
   chatEffort?: ChatEffort | null
+  /** Resolved collaboration mode for the spawn (Codex `turn/start.collaborationMode`). */
+  chatCollaboration?: ChatCollaborationMode | null
+  /** Whether Codex Fast Mode (`serviceTier: 'fast'`) is enabled for the spawn. */
+  chatFastMode?: boolean
 }
 
 /**
@@ -537,6 +823,9 @@ export interface CreateChatOpts {
  * down and replaced.
  */
 export function hydrateSession(opts: CreateChatOpts): ChatSessionInfo {
+  if (isShuttingDown) {
+    throw new ChatTransportError('Cannot hydrate chat session while app is shutting down.')
+  }
   // Refuse duplicate sessions for one tab.
   const existing = sessions.get(opts.tabId)
   if (existing) {
@@ -569,9 +858,9 @@ export function hydrateSession(opts: CreateChatOpts): ChatSessionInfo {
     }
   }
 
-  const adapter = getAdapter(opts.mode)
-  if (!adapter) {
-    throw new ChatTransportError(`No agent adapter registered for mode "${opts.mode}"`)
+  const backend = getBackend(opts.mode)
+  if (!backend) {
+    throw new ChatTransportError(`No agent backend registered for mode "${opts.mode}"`)
   }
 
   // Seed buffer/seq from persisted history when chat-handlers passed it in.
@@ -596,7 +885,8 @@ export function hydrateSession(opts: CreateChatOpts): ChatSessionInfo {
     taskId: opts.taskId,
     mode: opts.mode,
     cwd: opts.cwd,
-    adapter,
+    backend,
+    driver: null,
     child: null,
     buffer: seededBuffer,
     nextSeq: seededNextSeq,
@@ -611,13 +901,16 @@ export function hydrateSession(opts: CreateChatOpts): ChatSessionInfo {
     chatMode: opts.chatMode ?? null,
     chatModel: opts.chatModel ?? null,
     chatEffort: opts.chatEffort ?? null,
-    pendingControl: new Map(),
-    controlReqCounter: 0,
+    chatCollaboration: opts.chatCollaboration ?? null,
+    chatFastMode: opts.chatFastMode ?? false,
     onPersistSessionId: opts.onPersistSessionId,
     onInvalidResume: opts.onInvalidResume,
     staged: [],
     flushingStaged: false,
-    awaitingUserInput: false
+    awaitingUserInput: false,
+    watchdogTimer: null,
+    watchdogKillStage: 'none',
+    watchdogLastProgress: Date.now()
   }
   sessions.set(opts.tabId, session)
 
@@ -659,6 +952,9 @@ const inFlightSpawns = new Map<string, Promise<ChatSessionInfo>>()
  * does the work, others await its promise.
  */
 export async function ensureSpawned(tabId: string): Promise<ChatSessionInfo> {
+  if (isShuttingDown) {
+    throw new ChatTransportError('Cannot spawn chat session while app is shutting down.')
+  }
   const session = sessions.get(tabId)
   if (!session) {
     throw new ChatTransportError(
@@ -694,12 +990,12 @@ export async function ensureSpawned(tabId: string): Promise<ChatSessionInfo> {
  */
 async function spawnSubprocess(session: Session): Promise<void> {
   const opts = session.respawnOpts
-  const adapter = session.adapter
+  const backend = session.backend
 
-  const binary = await deps.whichBinary(adapter.binaryName)
+  const binary = await deps.whichBinary(backend.binaryName)
   if (!binary) {
     throw new ChatTransportError(
-      `Binary "${adapter.binaryName}" not found on PATH. Install it or fix your shell's PATH.`
+      `Binary "${backend.binaryName}" not found on PATH. Install it or fix your shell's PATH.`
     )
   }
 
@@ -707,7 +1003,7 @@ async function spawnSubprocess(session: Session): Promise<void> {
   // spawn-id per OS process so the renderer can scope bg shells to this run.
   const sessionId = session.sessionId
   session.spawnId = randomUUID()
-  const { args } = adapter.buildSpawnArgs({
+  const { args } = backend.buildSpawnArgs({
     sessionId,
     resume: Boolean(opts.conversationId),
     cwd: opts.cwd,
@@ -736,6 +1032,34 @@ async function spawnSubprocess(session: Session): Promise<void> {
   // Move out of the lazy `not-spawned` state. `child.on('spawn')` below
   // promotes to `idle` once the kernel reports the pid.
   transitionState(session, 'starting')
+  // Watchdog: if the `spawn` event never arrives, force the session to `dead`.
+  armWatchdog(session)
+
+  // Mint a fresh per-spawn protocol driver and build its IO context. The
+  // driver owns ALL provider-protocol logic (handshake, line parsing,
+  // request correlation); the transport only moves bytes in and AgentEvents
+  // out. `driver.start(ctx)` runs once on the `'spawn'` event below.
+  const driver = backend.createDriver()
+  session.driver = driver
+  const driverCtx: ChatDriverContext = {
+    write: (line) => {
+      try {
+        session.child?.stdin?.write(line + '\n')
+      } catch {
+        /* best-effort; a dead pipe surfaces via process exit */
+      }
+    },
+    emit: (event) => handleEvent(session, event),
+    cwd: opts.cwd,
+    sessionId,
+    resume: Boolean(opts.conversationId),
+    providerFlags: opts.providerFlags,
+    chatModel: session.chatModel,
+    chatEffort: session.chatEffort,
+    chatMode: session.chatMode,
+    chatCollaboration: session.chatCollaboration,
+    chatFastMode: session.chatFastMode
+  }
 
   // --- spawn: subprocess confirmed alive ---
   // Tie state machine to actual OS process lifecycle. `'spawn'` fires after the
@@ -755,58 +1079,27 @@ async function spawnSubprocess(session: Session): Promise<void> {
     if (session.terminalState === 'starting') {
       transitionState(session, 'idle')
     }
+    // Hand the driver its IO context. For a stream provider this just stores
+    // `ctx`; for a JSON-RPC provider it kicks off the `initialize` handshake.
+    // `'spawn'` always precedes the first stdout `'line'`, so `handleLine`
+    // never runs before `start`.
+    void Promise.resolve(driver.start(driverCtx)).catch((err) => {
+      handleEvent(session, {
+        kind: 'error',
+        message: err instanceof Error ? err.message : String(err),
+        detail: { phase: 'driver-start' }
+      })
+    })
   })
 
-  // --- stdout: readline buffers partial lines for us ---
+  // --- stdout: readline buffers partial lines; driver owns parsing ---
   const rl = readline.createInterface({ input: child.stdout!, crlfDelay: Infinity })
   rl.on('line', (line) => {
-    const ev = adapter.parseLine(line)
-    if (!ev) return
-    // Control responses route to the pending sender promise — they're transport
-    // plumbing, not chat timeline events. Skip broadcast/persist/buffer.
-    if (ev.kind === 'control-response') {
-      const pending = session.pendingControl.get(ev.requestId)
-      if (pending) {
-        clearTimeout(pending.timer)
-        session.pendingControl.delete(ev.requestId)
-        if (ev.isError) pending.reject(new Error(ev.error ?? 'control_request failed'))
-        else pending.resolve(ev.data)
-      }
-      return
+    try {
+      driver.handleLine(line)
+    } catch (err) {
+      console.error('[chat-transport] driver.handleLine threw:', err)
     }
-    // Plan-mode `ExitPlanMode` arrives via stdio permission-prompt because we
-    // pass `--permission-prompt-tool stdio` (claude-code-adapter.ts). The
-    // renderer's footer flow ("Approve & exit plan") is keyed off the SDK's
-    // `result.permissionDenials` — but the SDK only emits that AFTER receiving
-    // a control_response. Without an answer here the SDK blocks indefinitely
-    // and the chat sticks in `inFlight` with a "ExitPlanMode…" indicator.
-    // Auto-deny so the SDK delivers tool_result + result-with-denial; the
-    // existing renderer footer handles user approval (mode flip + re-send).
-    if (
-      ev.kind === 'permission-request' &&
-      ev.toolName === 'ExitPlanMode' &&
-      session.adapter.serializeControlResponse
-    ) {
-      const line = session.adapter.serializeControlResponse({
-        requestId: ev.requestId,
-        response: { behavior: 'deny', message: 'Plan mode requires explicit approval' }
-      })
-      if (line != null) {
-        try {
-          session.child?.stdin?.write(line + '\n')
-        } catch {
-          /* best-effort; SDK timeout will surface via process exit */
-        }
-      }
-      return
-    }
-    if (ev.kind === 'unknown' && ev.reason === 'unknown-type') {
-      // Surface unknown top-level types once, tagged for log filtering.
-      const raw = ev.raw as { type?: string } | null
-      const t = raw?.type ?? '<no-type>'
-      console.warn(`[chat-parser] unknown event type=${t}`)
-    }
-    handleEvent(session, ev)
   })
 
   // --- stderr: debounced buffer, emit as kind:'stderr' ---
@@ -826,6 +1119,10 @@ async function spawnSubprocess(session: Session): Promise<void> {
 
   // --- exit ---
   child.on('exit', (code, signal) => {
+    // Idempotent: the watchdog can synthesize an `exit` to reap a missed-exit
+    // race, and a late real `exit` may follow — process the teardown once.
+    if (session.ended) return
+    clearWatchdog(session)
     if (stderrTimer) {
       clearTimeout(stderrTimer)
       flushStderr()
@@ -841,11 +1138,12 @@ async function spawnSubprocess(session: Session): Promise<void> {
         console.error('[chat-transport] markTabSpawned(false) failed:', err)
       }
     }
-    // Reject any in-flight control_request promises so callers don't hang.
-    for (const [id, pending] of session.pendingControl) {
-      clearTimeout(pending.timer)
-      pending.reject(new Error('session ended before control_response'))
-      session.pendingControl.delete(id)
+    // Tear down the driver — rejects its in-flight control/request promises
+    // so callers don't hang.
+    try {
+      session.driver?.dispose()
+    } catch (err) {
+      console.error('[chat-transport] driver.dispose threw:', err)
     }
     // If this session was already replaced in the tab (e.g. reset: kill+create raced and the
     // new session is already live), swallow the exit so the UI doesn't revert to "Session ended".
@@ -870,9 +1168,8 @@ async function spawnSubprocess(session: Session): Promise<void> {
 
 export function sendUserMessage(tabId: string, text: string): boolean {
   const session = sessions.get(tabId)
-  if (!session || session.ended || !session.child) return false
-  const line = session.adapter.serializeUserMessage(text, session.sessionId)
-  session.child.stdin?.write(line + '\n')
+  if (!session || session.ended || !session.child || !session.driver) return false
+  session.driver.sendUserMessage(text)
   // Record into the session buffer so tab reloads / replay reconstruct user messages.
   handleEvent(session, { kind: 'user-message', text })
   markSessionUserInput(`${session.taskId}:${session.tabId}`)
@@ -884,7 +1181,7 @@ export function sendUserMessage(tabId: string, text: string): boolean {
  * stdin. Used by inline-answer flows like AskUserQuestion so the SDK's turn
  * machinery sees a normal completion instead of an orphaned tool_use that
  * skews stop_reason / usage accounting. Returns false when the session is
- * gone or the adapter lacks a structured-input channel — caller falls back
+ * gone or the driver lacks a structured-input channel — caller falls back
  * to `sendUserMessage`.
  */
 export function sendToolResult(
@@ -892,25 +1189,16 @@ export function sendToolResult(
   args: { toolUseId: string; content: string; isError?: boolean }
 ): boolean {
   const session = sessions.get(tabId)
-  if (!session || session.ended || !session.child) return false
-  if (!session.adapter.serializeToolResult) return false
-  const line = session.adapter.serializeToolResult({
-    toolUseId: args.toolUseId,
-    content: args.content,
-    isError: args.isError,
-    sessionId: session.sessionId
-  })
-  if (line == null) return false
-  session.child.stdin?.write(line + '\n')
-  return true
+  if (!session || session.ended || !session.child || !session.driver) return false
+  if (!session.driver.sendToolResult) return false
+  return session.driver.sendToolResult(args)
 }
 
 /**
- * Send a `control_request` over stdin and resolve when the matching
- * `control_response` arrives (correlated by `request_id`). Rejects on adapter
- * lacking a control channel, on timeout, on response `subtype:'error'`, or on
- * session exit before a response arrives. Used to flip permission mode /
- * model / interrupt without restarting the subprocess.
+ * Send a control request to the driver and resolve when the provider
+ * acknowledges. Rejects on driver lacking a control channel, on timeout, on
+ * provider error, or on session exit before a response arrives. Used to flip
+ * permission mode / model / interrupt without restarting the subprocess.
  */
 export function sendControlRequest(
   tabId: string,
@@ -918,33 +1206,13 @@ export function sendControlRequest(
   timeoutMs = 30_000
 ): Promise<unknown> {
   const session = sessions.get(tabId)
-  if (!session || session.ended || !session.child) {
+  if (!session || session.ended || !session.child || !session.driver) {
     return Promise.reject(new Error('no live session'))
   }
-  if (!session.adapter.serializeControlRequest) {
-    return Promise.reject(new Error('adapter has no control channel'))
+  if (!session.driver.applyControl) {
+    return Promise.reject(new Error('driver has no control channel'))
   }
-  session.controlReqCounter++
-  const requestId = `req_${session.controlReqCounter}_${Date.now().toString(36)}`
-  const line = session.adapter.serializeControlRequest({ requestId, request })
-  if (line == null) {
-    return Promise.reject(new Error('adapter refused to serialize control_request'))
-  }
-  const child = session.child
-  return new Promise<unknown>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      session.pendingControl.delete(requestId)
-      reject(new Error(`control_request timeout after ${timeoutMs}ms`))
-    }, timeoutMs)
-    session.pendingControl.set(requestId, { resolve, reject, timer })
-    try {
-      child.stdin?.write(line + '\n')
-    } catch (err) {
-      clearTimeout(timer)
-      session.pendingControl.delete(requestId)
-      reject(err instanceof Error ? err : new Error(String(err)))
-    }
-  })
+  return session.driver.applyControl(request, timeoutMs)
 }
 
 /**
@@ -952,7 +1220,7 @@ export function sendControlRequest(
  * `set_permission_mode` control_request so `getSessionInfo` reflects the new
  * mode without waiting for a turn-init drift sync.
  */
-export function updateSessionChatMode(tabId: string, mode: ChatMode | null): void {
+export function updateSessionChatMode(tabId: string, mode: string | null): void {
   const session = sessions.get(tabId)
   if (!session) return
   session.chatMode = mode
@@ -963,7 +1231,7 @@ export function updateSessionChatMode(tabId: string, mode: ChatMode | null): voi
  * `set_model` control_request so `getSessionInfo` reflects the new model
  * without waiting for a turn-init drift sync.
  */
-export function updateSessionChatModel(tabId: string, model: ChatModel | null): void {
+export function updateSessionChatModel(tabId: string, model: string | null): void {
   const session = sessions.get(tabId)
   if (!session) return
   session.chatModel = model
@@ -981,39 +1249,45 @@ export function updateSessionChatEffort(tabId: string, effort: ChatEffort | null
 }
 
 /**
+ * Mutate the in-memory `Session.chatCollaboration`. Used by the pre-spawn fast
+ * path of `chat:setCollaboration` so a skeleton session reflects the new value
+ * before the next spawn picks it up.
+ */
+export function updateSessionChatCollaboration(
+  tabId: string,
+  collaboration: ChatCollaborationMode | null
+): void {
+  const session = sessions.get(tabId)
+  if (!session) return
+  session.chatCollaboration = collaboration
+}
+
+/**
+ * Mutate the in-memory `Session.chatFastMode`. Used by the pre-spawn fast path
+ * of `chat:setFastMode` so a skeleton session reflects the new value before
+ * the next spawn picks it up.
+ */
+export function updateSessionChatFastMode(tabId: string, fastMode: boolean): void {
+  const session = sessions.get(tabId)
+  if (!session) return
+  session.chatFastMode = fastMode
+}
+
+/**
  * Reply to an inbound `control_request` (e.g. `subtype:'can_use_tool'` from
  * `--permission-prompt-tool stdio`). The renderer has surfaced the prompt
- * to the user and gathered their decision; this writes the success/error
- * `control_response` on stdin so the CLI unblocks the tool. Returns false
- * when session/adapter can't carry the reply — caller handles fallback.
+ * to the user and gathered their decision; the driver translates it to the
+ * provider's approval reply. Returns false when session/driver can't carry
+ * the reply — caller handles fallback.
  */
 export function respondToPermissionRequest(
   tabId: string,
-  args: {
-    requestId: string
-    decision:
-      | {
-          behavior: 'allow'
-          updatedInput?: Record<string, unknown>
-          updatedPermissions?: unknown[]
-        }
-      | { behavior: 'deny'; message: string; interrupt?: boolean }
-  }
+  args: { requestId: string; decision: PermissionDecision }
 ): boolean {
   const session = sessions.get(tabId)
-  if (!session || session.ended || !session.child) return false
-  if (!session.adapter.serializeControlResponse) return false
-  const line = session.adapter.serializeControlResponse({
-    requestId: args.requestId,
-    response: args.decision as unknown as Record<string, unknown>
-  })
-  if (line == null) return false
-  try {
-    session.child.stdin?.write(line + '\n')
-    return true
-  } catch {
-    return false
-  }
+  if (!session || session.ended || !session.child || !session.driver) return false
+  if (!session.driver.respondPermission) return false
+  return session.driver.respondPermission(args)
 }
 
 /**
@@ -1064,12 +1338,17 @@ export function popLastUserMessage(tabId: string): { popped: boolean; text: stri
 
 /**
  * Scan a seeded buffer's tail to detect an unfinished turn — the last
- * stateful event is a turn-starter (user-message/turn-init/tool-call) with
+ * stateful event is a turn-starter (user-message/tool-call) with
  * no subsequent terminal marker (result/process-exit/interrupted/
  * user-message-popped). Used by hydrateSession to keep the renderer's
  * userMessagesSent/resultCount balance honest after a restore: without a
  * synthetic interrupted, inFlight would stay true forever even though the
  * fresh subprocess (post --resume) sits idle waiting for input.
+ *
+ * `turn-init` is deliberately NOT a turn-starter here: Codex emits a synthetic
+ * one at handshake, so a buffer whose tail is `turn-init` (session spawned,
+ * no message ever sent) is idle, not mid-turn. A real unfinished turn still
+ * tails with `user-message`/`tool-call`, which always precede `turn-init`.
  */
 function tailIsUnfinishedTurn(buffer: BufferedEvent[]): boolean {
   for (let i = buffer.length - 1; i >= 0; i--) {
@@ -1082,7 +1361,7 @@ function tailIsUnfinishedTurn(buffer: BufferedEvent[]): boolean {
     ) {
       return false
     }
-    if (k === 'user-message' || k === 'turn-init' || k === 'tool-call') {
+    if (k === 'user-message' || k === 'tool-call') {
       return true
     }
   }
@@ -1106,6 +1385,7 @@ function isProgressEventKind(kind: AgentEvent['kind']): boolean {
     case 'stream-block-delta':
     case 'stream-block-stop':
     case 'stream-message-stop':
+    case 'agent-plan':
       return true
     default:
       return false
@@ -1145,6 +1425,7 @@ export function kill(tabId: string): void {
 export function removeSession(tabId: string): void {
   const session = sessions.get(tabId)
   if (!session) return
+  clearWatchdog(session)
   if (!session.ended && session.child) kill(tabId)
   sessions.delete(tabId)
 }
@@ -1172,13 +1453,113 @@ function toInfo(session: Session): ChatSessionInfo {
     ended: session.ended,
     chatMode: session.chatMode,
     chatModel: session.chatModel,
-    chatEffort: session.chatEffort
+    chatEffort: session.chatEffort,
+    chatCollaboration: session.chatCollaboration,
+    chatFastMode: session.chatFastMode
   }
 }
 
 /** Kill all sessions (app shutdown). */
 export function killAll(): void {
   for (const tabId of sessions.keys()) kill(tabId)
+}
+
+function toErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function forceFinalizeForShutdown(session: Session): void {
+  clearWatchdog(session)
+  session.ended = true
+  session.child = null
+  try {
+    session.driver?.dispose()
+  } catch (err) {
+    console.error('[chat-transport] shutdown driver.dispose threw:', err)
+  }
+  session.driver = null
+  transitionState(session, 'dead')
+  clearSessionUserInputMark(`${session.taskId}:${session.tabId}`)
+}
+
+function shutdownSession(
+  session: Session,
+  opts: Required<ShutdownOptions>
+): Promise<{
+  id: string
+  exited: boolean
+  killed: boolean
+  timedOut: boolean
+  errors: TransportShutdownResult['errors']
+}> {
+  return new Promise((resolve) => {
+    const errors: TransportShutdownResult['errors'] = []
+    const child = session.child
+    const id = session.tabId
+    if (session.ended || !child) {
+      forceFinalizeForShutdown(session)
+      resolve({ id, exited: true, killed: false, timedOut: false, errors })
+      return
+    }
+
+    let settled = false
+    let killed = false
+    let termTimer: ReturnType<typeof setTimeout> | null = null
+    let hardTimer: ReturnType<typeof setTimeout> | null = null
+
+    const cleanup = (): void => {
+      if (termTimer) clearTimeout(termTimer)
+      if (hardTimer) clearTimeout(hardTimer)
+      child.off('exit', onExit)
+    }
+    const settle = (timedOut: boolean): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (timedOut) forceFinalizeForShutdown(session)
+      resolve({ id, exited: !timedOut, killed, timedOut, errors })
+    }
+    const recordError = (phase: string, err: unknown): void => {
+      errors.push({ id, phase, message: toErrorMessage(err) })
+    }
+    const onExit = (): void => settle(false)
+
+    child.once('exit', onExit)
+    clearWatchdog(session)
+    try {
+      child.kill('SIGTERM')
+    } catch (err) {
+      recordError('sigterm', err)
+    }
+    termTimer = setTimeout(() => {
+      killed = true
+      try {
+        child.kill('SIGKILL')
+      } catch (err) {
+        recordError('sigkill', err)
+      }
+    }, opts.termGraceMs)
+    termTimer.unref?.()
+    hardTimer = setTimeout(() => settle(true), opts.hardTimeoutMs)
+    hardTimer.unref?.()
+  })
+}
+
+export async function shutdownAll(options: ShutdownOptions = {}): Promise<TransportShutdownResult> {
+  setShuttingDown(true)
+  const opts: Required<ShutdownOptions> = {
+    termGraceMs: options.termGraceMs ?? DEFAULT_SHUTDOWN_TERM_GRACE_MS,
+    hardTimeoutMs: options.hardTimeoutMs ?? DEFAULT_SHUTDOWN_HARD_TIMEOUT_MS
+  }
+  const targets = Array.from(sessions.values()).filter((session) => !session.ended)
+  const results = await Promise.all(targets.map((session) => shutdownSession(session, opts)))
+  return {
+    total: results.length,
+    exited: results.filter((r) => r.exited).length,
+    killed: results.filter((r) => r.killed).length,
+    timedOut: results.filter((r) => r.timedOut).length,
+    errors: results.flatMap((r) => r.errors)
+  }
 }
 
 /** Kill every live chat session bound to a given taskId. Mirrors
@@ -1233,6 +1614,17 @@ export class ChatTransportError extends Error {
 
 /** For tests: inspect + clear state. */
 export function __resetForTests(): void {
+  for (const session of sessions.values()) clearWatchdog(session)
   sessions.clear()
   inFlightSpawns.clear()
+  isShuttingDown = false
+}
+
+/**
+ * Test-only: the OS subprocess for a tab. A real `child_process` emits `spawn`
+ * once the kernel reports the pid; tests drive a fake child and need this
+ * handle to fire `spawn` themselves (which is what triggers `driver.start`).
+ */
+export function __getSessionChildForTests(tabId: string): ChildProcess | null {
+  return sessions.get(tabId)?.child ?? null
 }

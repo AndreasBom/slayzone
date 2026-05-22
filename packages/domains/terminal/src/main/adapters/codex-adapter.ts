@@ -13,18 +13,29 @@ import { whichBinary, validateShellEnv } from '../shell-env'
 
 /**
  * Adapter for OpenAI Codex.
- * Codex uses a full-screen Ratatui TUI. Detects 'working' from interrupt/cancel hints;
- * idle timeout returns to 'idle'.
+ *
+ * State source: Codex's native hooks system (SessionStart, UserPromptSubmit,
+ * PreToolUse, Stop, PermissionRequest) installed by `codex-hook-installer` and
+ * forwarded via `notify.sh` → `POST /api/agent-hook` → state machine. The
+ * legacy "esc to interrupt" working-indicator regex was retired —
+ * `detectActivity` only handles the approval-modal exception now.
+ *
+ * No silence-timer fallback: hooks + the approval-modal detection are the
+ * sole running→idle signals. idleTimeoutMs = Infinity disables the inactivity
+ * checker for this adapter.
  */
 export class CodexAdapter implements TerminalAdapter {
   readonly mode = 'codex' as const
-  // Codex TUI updates in many small chunks, so we keep "working" latched and
-  // let a short idle timeout decide when activity has stopped.
-  readonly idleTimeoutMs = 2500
-  // detectActivity only fires on the "esc to interrupt" hint, which Codex may
-  // hide during certain phases (e.g. tool execution). Stay output-driven so
-  // those quiet phases don't prematurely flip to idle mid-response.
-  readonly transitionOnInput = false
+  // No silence-timer fallback — mirrors ClaudeAdapter. Hooks drive every
+  // running→idle transition; the approval-modal check in detectActivity
+  // covers the lagging-hook case. A time-based fallback only misfired: a
+  // quiet "thinking" gap tripped a false running→idle mid-turn → spurious
+  // needs_attention. Infinity makes the inactivity checker skip this adapter.
+  //
+  // `transitionOnInput` is left at the TUI default (like ClaudeAdapter):
+  // Enter flips to 'running' for instant feedback before the
+  // UserPromptSubmit hook lands.
+  readonly idleTimeoutMs = Infinity
   readonly sessionIdCommand = '/status'
 
   encodeSubmit = defaultEncodeSubmit
@@ -38,13 +49,6 @@ export class CodexAdapter implements TerminalAdapter {
 
   private static normalizeText(data: string): string {
     return data.replace(/\s+/g, ' ').trim()
-  }
-
-  private static hasWorkingIndicator(text: string): boolean {
-    return (
-      /\b(?:esc|escape)\s+to\s+(?:interrupt|cancel|stop)\b/i.test(text) ||
-      /\b(?:ctrl\s*\+\s*c|control-c)\s+to\s+(?:interrupt|cancel|stop)\b/i.test(text)
-    )
   }
 
   /**
@@ -71,12 +75,15 @@ export class CodexAdapter implements TerminalAdapter {
     )
   }
 
+  /**
+   * Activity detection is hook-driven (UserPromptSubmit / PreToolUse → running,
+   * Stop → idle — see `rest-api/agent-hook.ts`). The ONE output signal kept is
+   * the approval modal: a synchronous TUI modal that acts as the fallback when
+   * the `PermissionRequest` hook lags or hooks are untrusted — flips
+   * running→idle immediately rather than waiting on the lagging hook.
+   */
   detectActivity(data: string, _current: ActivityState): ActivityState | null {
     const stripped = CodexAdapter.normalizeText(CodexAdapter.stripAnsi(data))
-    if (CodexAdapter.hasWorkingIndicator(stripped)) return 'working'
-    // Approval modal visible → explicit idle flip; user input is awaited.
-    // Mirrors claude's completion-stamp pattern so we don't wait the full
-    // idleTimeoutMs silence window.
     if (CodexAdapter.hasApprovalModal(stripped)) return 'idle'
     return null
   }

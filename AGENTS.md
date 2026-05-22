@@ -6,8 +6,6 @@ You (this instance) is actually running inside SlayZone now. We are dogfooding S
 
 You are able to interact with the running SlayZone application via the CLI. But **you MUST load the `slay` skill before running any `slay` CLI command.** Do not guess subcommands or flags — the skill has the full reference.
 
-If you ever interact with the CLI, you must append the `--dev` flag, since we are running in dev mode.
-
 The session is ran with the `$SLAYZONE_TASK_ID` environment variable, so you can omit the task-id unless you want to target another task.
 
 ## Communication Style

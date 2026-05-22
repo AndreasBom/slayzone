@@ -22,6 +22,7 @@ const PROVIDERS = [
   { mode: 'codex', label: 'Codex' },
   { mode: 'cursor-agent', label: 'Cursor' },
   { mode: 'gemini', label: 'Gemini' },
+  { mode: 'antigravity', label: 'Antigravity' },
   { mode: 'opencode', label: 'OpenCode' },
   { mode: 'qwen-code', label: 'Qwen Code' },
   { mode: 'copilot', label: 'Copilot' }

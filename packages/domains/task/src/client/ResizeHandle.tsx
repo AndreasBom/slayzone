@@ -1,21 +1,32 @@
 import { useRef, useCallback, useEffect, type CSSProperties } from 'react'
 
 interface ResizeHandleProps {
-  width: number
-  minWidth: number
-  maxWidth?: number
-  onWidthChange: (width: number) => void
+  /** Current width of the panel immediately left of this handle */
+  leftWidth: number
+  /** Current width of the panel immediately right of this handle */
+  rightWidth: number
+  leftMinWidth: number
+  rightMinWidth: number
+  /** Commit new widths for both adjacent panels (their sum is preserved) */
+  onResize: (leftWidth: number, rightWidth: number) => void
   onDragStart?: () => void
   onDragEnd?: () => void
   onReset?: () => void
   style?: CSSProperties
 }
 
+/**
+ * Divider between two panels. Dragging moves the shared boundary: the left
+ * panel grows while the right panel shrinks (and vice versa). The pair's
+ * combined width is kept constant, so no other panel shifts and no dead space
+ * opens up — regardless of which panels sit on either side.
+ */
 export function ResizeHandle({
-  width,
-  minWidth,
-  maxWidth,
-  onWidthChange,
+  leftWidth,
+  rightWidth,
+  leftMinWidth,
+  rightMinWidth,
+  onResize,
   onDragStart,
   onDragEnd,
   onReset,
@@ -23,7 +34,8 @@ export function ResizeHandle({
 }: ResizeHandleProps) {
   const isDragging = useRef(false)
   const startX = useRef(0)
-  const startWidth = useRef(width)
+  const startLeft = useRef(leftWidth)
+  const startRight = useRef(rightWidth)
   const cleanupRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
@@ -37,17 +49,19 @@ export function ResizeHandle({
       e.preventDefault()
       isDragging.current = true
       startX.current = e.clientX
-      startWidth.current = width
+      startLeft.current = leftWidth
+      startRight.current = rightWidth
       onDragStart?.()
 
       const handleMouseMove = (e: MouseEvent) => {
         if (!isDragging.current) return
         const delta = e.clientX - startX.current
-        const newWidth = Math.min(
-          maxWidth ?? Infinity,
-          Math.max(minWidth, startWidth.current - delta)
+        const total = startLeft.current + startRight.current
+        const newLeft = Math.min(
+          total - rightMinWidth,
+          Math.max(leftMinWidth, startLeft.current + delta)
         )
-        onWidthChange(newWidth)
+        onResize(newLeft, total - newLeft)
       }
 
       const handleMouseUp = () => {
@@ -65,7 +79,7 @@ export function ResizeHandle({
         document.removeEventListener('mouseup', handleMouseUp)
       }
     },
-    [width, minWidth, maxWidth, onWidthChange, onDragStart, onDragEnd]
+    [leftWidth, rightWidth, leftMinWidth, rightMinWidth, onResize, onDragStart, onDragEnd]
   )
 
   return (

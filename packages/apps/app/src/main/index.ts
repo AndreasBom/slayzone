@@ -35,6 +35,7 @@ import {
   clearBrowserRegistry
 } from './browser-registry'
 import { BrowserViewManager, type CreateViewOpts, type ViewBounds } from './browser-view-manager'
+import { attachRendererCsp } from './renderer-csp'
 import {
   BLOCKED_EXTERNAL_PROTOCOLS,
   inferHostScopeFromUrl,
@@ -65,6 +66,28 @@ function getEffectiveKeys(id: string, overrides: Record<string, string | null>):
   if (id in overrides) return overrides[id]
   const def = shortcutDefinitions.find((d) => d.id === id)
   return def?.defaultKeys ?? null
+}
+
+/**
+ * Resolves the in-process tRPC WS port once the server is listening, or 0
+ * after `timeoutMs`. The port is published on `globalThis.__trpcPort` by
+ * startTrpcServer; it lands shortly after boot since the server starts off
+ * the critical path. Consumed by the `app:get-trpc-port` IPC and the renderer
+ * CSP header builder.
+ */
+function awaitTrpcPort(timeoutMs = 5000): Promise<number> {
+  const existing = (globalThis as Record<string, unknown>).__trpcPort
+  if (typeof existing === 'number') return Promise.resolve(existing)
+  return new Promise<number>((resolve) => {
+    const start = Date.now()
+    const check = (): void => {
+      const port = (globalThis as Record<string, unknown>).__trpcPort
+      if (typeof port === 'number') resolve(port)
+      else if (Date.now() - start > timeoutMs) resolve(0)
+      else setTimeout(check, 25)
+    }
+    check()
+  })
 }
 
 // Custom protocol for serving local files in browser panel webviews
@@ -166,7 +189,13 @@ if (process.env.SLAYZONE_USER_DATA_DIR) {
 
 import icon from '../../resources/icon.png?asset'
 import logoSolid from '../../resources/logo-solid.svg?asset'
-import { getDatabase, closeDatabase, getDiagnosticsDatabase, closeDiagnosticsDatabase } from './db'
+import {
+  getDatabase,
+  closeDatabase,
+  getDatabasePath,
+  getDiagnosticsDatabase,
+  closeDiagnosticsDatabase
+} from './db'
 import { runMigrations, LATEST_MIGRATION_VERSION } from './db/migrations'
 import { normalizeProjectStatusData } from './db/status-normalization'
 import { migrateV127DiskDir } from './db/v127-disk-migration'
@@ -199,6 +228,7 @@ import {
   registerPtyHandlers,
   registerUsageHandlers,
   killAllPtys,
+  shutdownAllPtys,
   killPtysByTaskId,
   onTaskReachedTerminal,
   startIdleChecker,
@@ -210,6 +240,7 @@ import {
   onPtyInputSubmit,
   registerChatHandlers,
   shutdownChatTransports,
+  killAllChatTransports,
   setOnHostKillHandler,
   broadcastRespawnRequest,
   backfillChatModes,
@@ -291,7 +322,8 @@ import {
   listForTask,
   listAllProcesses,
   killTaskProcesses,
-  killAllProcesses
+  killAllProcesses,
+  shutdownAllProcesses
 } from './process-manager'
 import { createStatsPoller } from './pid-stats'
 import { registerExportImportHandlers } from './export-import'
@@ -432,6 +464,12 @@ let linearSyncPoller: NodeJS.Timeout | null = null
 let discoveryPoller: NodeJS.Timeout | null = null
 let mcpCleanup: (() => void) | null = null
 let trpcCleanup: (() => void) | null = null
+let sidecarCleanup: (() => void) | null = null
+let sidecarServerHandle: import('./sidecar-server-supervisor').SidecarServerHandle | null = null
+let quitDrainComplete = false
+let quitSubprocessCleanupPromise: Promise<void> | null = null
+const QUIT_SUBPROCESS_TERM_GRACE_MS = 1500
+const QUIT_SUBPROCESS_HARD_TIMEOUT_MS = 5000
 type OAuthCallbackPayload = { code?: string; error?: string }
 const oauthCallbackQueue: OAuthCallbackPayload[] = []
 const oauthCallbackWaiters = new Set<(payload: OAuthCallbackPayload) => void>()
@@ -448,6 +486,43 @@ type ProtocolClientStatus = {
   attempted: boolean
   registered: boolean
   reason: ProtocolClientStatusReason
+}
+
+function shutdownSubprocessesForQuit(): Promise<void> {
+  if (quitSubprocessCleanupPromise) return quitSubprocessCleanupPromise
+  const opts = {
+    termGraceMs: QUIT_SUBPROCESS_TERM_GRACE_MS,
+    hardTimeoutMs: QUIT_SUBPROCESS_HARD_TIMEOUT_MS
+  }
+  quitSubprocessCleanupPromise = (async () => {
+    try {
+      beginTerminalShutdown()
+    } catch (err) {
+      console.error('[main] quit subprocess cleanup failed in beginTerminalShutdown:', err)
+    }
+    const steps: Array<[string, () => Promise<unknown>]> = [
+      ['shutdownAllPtys', () => shutdownAllPtys(opts)],
+      ['shutdownChatTransports', () => shutdownChatTransports(opts)],
+      ['shutdownAllProcesses', () => shutdownAllProcesses(opts)]
+    ]
+    const results = await Promise.all(
+      steps.map(async ([name, fn]) => {
+        try {
+          return [name, await fn()] as const
+        } catch (err) {
+          console.error(`[main] quit subprocess cleanup failed in ${name}:`, err)
+          return [name, null] as const
+        }
+      })
+    )
+    recordDiagnosticEvent({
+      level: 'info',
+      source: 'main',
+      event: 'app.quit_subprocess_shutdown',
+      payload: Object.fromEntries(results)
+    })
+  })()
+  return quitSubprocessCleanupPromise
 }
 let protocolClientStatus: ProtocolClientStatus = {
   scheme: APP_PROTOCOL_SCHEME,
@@ -1569,6 +1644,46 @@ app
         })
     })
 
+    // Dark-launch the @slayzone/server side-car (slice 2.5). It is spawned +
+    // supervised but nothing depends on it yet — the renderer still uses the
+    // in-process tRPC server above. A permanent failure here is log-only, no
+    // user impact. Slice 2.6 flips the renderer onto the side-car.
+    setImmediate(() => {
+      logBoot('sidecar server supervisor import dispatched')
+      import('./sidecar-server-supervisor')
+        .then(({ startSidecarServer }) => {
+          const scriptPath = is.dev
+            ? join(app.getAppPath(), '../server/dist/bin.js')
+            : join(process.resourcesPath, 'server', 'bin.js')
+          const supervisor = startSidecarServer({
+            execPath: process.execPath,
+            scriptPath,
+            host: '127.0.0.1',
+            env: {
+              ...process.env,
+              SLAYZONE_STORE_DIR: ensureDataRoot(),
+              SLAYZONE_DB_PATH: getDatabasePath()
+            },
+            logger: (line) => logBoot(line),
+            onReady: () => {
+              /* supervisor logger already emits the ready line */
+            },
+            onPermanentFailure: (info) => {
+              console.error(
+                '[supervisor] sidecar permanent failure (dark-launch, non-fatal):',
+                info
+              )
+            }
+          })
+          sidecarServerHandle = supervisor
+          sidecarCleanup = () => void supervisor.stop()
+          logBoot('sidecar server supervisor started')
+        })
+        .catch((err) => {
+          console.error('[sidecar] Failed to start supervisor:', err)
+        })
+    })
+
     // Install agent lifecycle hook script + Claude settings.json entries.
     // Off boot critical path; failures must NOT block app startup (logged only).
     // Skipped under Playwright unless the spec explicitly opts in — most E2E
@@ -1577,23 +1692,52 @@ app
     if (!process.env.PLAYWRIGHT || process.env.SLAYZONE_E2E_INSTALL_HOOKS === '1') {
       setImmediate(async () => {
         try {
+          // Defense-in-depth: under Playwright every hook installer must write
+          // to a sandboxed path supplied by the e2e fixture. If a sandbox env
+          // var is missing, the installer's `get*Path()` falls back to the dev
+          // user's REAL home (~/.claude, ~/.antigravity, …) and silently
+          // pollutes it. Fail loud + skip ALL installs rather than do that.
+          // (Regression guard — a missing `SLAYZONE_ANTIGRAVITY_HOOKS_PATH`
+          // once leaked SlayZone hooks into the real ~/.antigravity/hooks.json.)
+          if (process.env.PLAYWRIGHT) {
+            const sandboxVars = [
+              'SLAYZONE_HOME_DIR',
+              'SLAYZONE_CLAUDE_SETTINGS_PATH',
+              'SLAYZONE_CODEX_HOOKS_PATH',
+              'SLAYZONE_GEMINI_SETTINGS_PATH',
+              'SLAYZONE_ANTIGRAVITY_HOOKS_PATH',
+              'SLAYZONE_OPENCODE_PLUGIN_PATH'
+            ]
+            const missing = sandboxVars.filter((v) => !process.env[v])
+            if (missing.length > 0) {
+              console.error(
+                `[agent-hooks] refusing to install under PLAYWRIGHT — unsandboxed paths (missing: ${missing.join(', ')})`
+              )
+              return
+            }
+          }
           const [
             { installNotifyScript },
             { installClaudeHooks },
-            { installCodexWrapper },
+            { installCodexHooks, uninstallCodexWrapper },
             { installGeminiHooks },
+            { installAntigravityHooks },
             { installOpencodePlugin }
           ] = await Promise.all([
             import('./agent-hooks/notify-script-installer'),
             import('./agent-hooks/claude-hook-installer'),
-            import('./agent-hooks/codex-wrapper-installer'),
+            import('./agent-hooks/codex-hook-installer'),
             import('./agent-hooks/gemini-hook-installer'),
+            import('./agent-hooks/antigravity-hook-installer'),
             import('./agent-hooks/opencode-plugin-installer')
           ])
           const { path: scriptPath } = await installNotifyScript()
           await installClaudeHooks({ scriptPath })
-          await installCodexWrapper()
+          await installCodexHooks({ scriptPath })
+          // Remove the legacy ~/.slayzone/bin/codex bash wrapper from prior installs.
+          await uninstallCodexWrapper()
           await installGeminiHooks({ scriptPath })
+          await installAntigravityHooks({ scriptPath })
           await installOpencodePlugin({ notifyPath: scriptPath })
           logBoot('agent hooks installed')
         } catch (err) {
@@ -1796,6 +1940,12 @@ div{text-align:center}h1{font-size:14px;font-weight:500;color:#aaa}p{font-size:1
     browserSession.protocol.handle('slz-file', slzFileHandler)
     webPanelSession.protocol.handle('slz-file', slzFileHandler)
     session.defaultSession.protocol.handle('slz-file', slzFileHandler)
+
+    // Emit the renderer Content-Security-Policy as a response header so it can
+    // name the dynamic in-process tRPC WS port exactly (a static meta tag
+    // can't). Registered before any window loads — createWindow() runs at the
+    // end of whenReady — so every app document is covered.
+    attachRendererCsp(session.defaultSession, awaitTrpcPort, is.dev)
 
     // Block external app protocol launches from webviews by registering no-op handlers.
     // External protocol URLs (figma://, slack://, etc.) bypass will-navigate entirely —
@@ -2013,19 +2163,22 @@ div{text-align:center}h1{font-size:14px;font-weight:500;color:#aaa}p{font-size:1
     })
 
     ipcMain.handle('app:getVersion', () => app.getVersion())
-    ipcMain.handle('app:get-trpc-port', async () => {
-      const g = globalThis as Record<string, unknown>
-      if (typeof g.__trpcPort === 'number') return g.__trpcPort as number
-      return new Promise<number>((resolve) => {
-        const start = Date.now()
-        const check = (): void => {
-          const port = (globalThis as Record<string, unknown>).__trpcPort
-          if (typeof port === 'number') resolve(port)
-          else if (Date.now() - start > 5000) resolve(0)
-          else setTimeout(check, 25)
+    ipcMain.handle('app:get-trpc-port', () => awaitTrpcPort())
+    // Read-only side-car (dark-launch) status for the Diagnostics settings tab.
+    ipcMain.handle('app:get-sidecar-status', () => {
+      return (
+        sidecarServerHandle?.getStatus() ?? {
+          health: 'starting' as const,
+          port: null,
+          pid: null,
+          restarts: 0,
+          dbPath: null,
+          uptimeMs: null
         }
-        check()
-      })
+      )
+    })
+    ipcMain.handle('app:reveal-sidecar-log', () => {
+      shell.showItemInFolder(join(ensureDataRoot(), 'logs', 'sidecar.log'))
     })
     ipcMain.handle('app:is-tests-panel-enabled', () => isLabEnabled('labs_tests_panel'))
     ipcMain.on('app:is-tests-panel-enabled-sync', (event) => {
@@ -2805,7 +2958,7 @@ div{text-align:center}h1{font-size:14px;font-weight:500;color:#aaa}p{font-size:1
       ipcMain.handle('app:reset-for-test', async () => {
         // 1. Kill running processes
         killAllPtys()
-        shutdownChatTransports()
+        killAllChatTransports()
         stopIdleChecker()
         killAllProcesses()
 
@@ -3153,6 +3306,15 @@ app.on('window-all-closed', () => {
   }
 })
 
+app.on('before-quit', (event) => {
+  if (quitDrainComplete) return
+  event.preventDefault()
+  void shutdownSubprocessesForQuit().finally(() => {
+    quitDrainComplete = true
+    app.quit()
+  })
+})
+
 // Clean up database connection and active processes before quitting
 app.on('will-quit', () => {
   oauthCallbackQueue.length = 0
@@ -3167,6 +3329,7 @@ app.on('will-quit', () => {
   }
   mcpCleanup?.()
   trpcCleanup?.()
+  sidecarCleanup?.()
   // Record completion BEFORE closing diagnostics DB; a row written here is the last
   // event of the session and proves the chain ran. stopDiagnostics() can clear timers
   // safely after.
@@ -3181,13 +3344,6 @@ app.on('will-quit', () => {
   stopAutoBackup()
   closeArtifactWatcher()
   closeGitWatcher()
-  // Flip the shutdown gates BEFORE killing — pty/chat exit handlers check
-  // these and skip clearing `terminal_tabs.was_spawned`. The flag therefore
-  // survives shutdown and the next boot reads it to auto-restart warm agents.
-  beginTerminalShutdown()
-  killAllPtys()
-  shutdownChatTransports()
-  killAllProcesses()
   closeDatabase()
   closeDiagnosticsDatabase()
   // Sentinel last: presence on next boot ⇒ clean shutdown reached this line.

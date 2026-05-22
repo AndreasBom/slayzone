@@ -8,7 +8,7 @@
  * `agent:lifecycle` IPC channel.
  */
 
-export type AgentId = 'claude-code' | 'codex' | 'gemini' | 'opencode'
+export type AgentId = 'claude-code' | 'codex' | 'gemini' | 'antigravity' | 'opencode'
 
 /**
  * Runtime allowlist for agents that currently emit hook lifecycle events.
@@ -19,6 +19,7 @@ export const HOOK_SUPPORTED_AGENT_IDS: ReadonlySet<AgentId> = new Set<AgentId>([
   'claude-code',
   'codex',
   'gemini',
+  'antigravity',
   'opencode'
 ])
 
@@ -55,9 +56,9 @@ const ALIAS_TABLE: Record<string, AgentLifecycleEventType> = {
   permissionrequest: 'permission-request',
   precompact: 'agent-stop',
 
-  // Codex / generic aliases (forward-looking; mirrors Superset coverage).
-  // Bare Start/Stop come from the codex wrapper's synthetic
-  // {"hook_event_name":"Start"} payloads (see codex-wrapper.sh).
+  // Codex / generic aliases. Codex now emits the standard Claude-style names
+  // (SessionStart/UserPromptSubmit/Stop/PermissionRequest) via its native
+  // hooks system; these extra aliases stay for legacy/generic payloads.
   // `permissionrequest` already mapped above under Claude block; `stop` reused.
   start: 'agent-start',
   task_started: 'agent-start',
@@ -92,7 +93,11 @@ const ALIAS_TABLE: Record<string, AgentLifecycleEventType> = {
   prerequest: 'agent-start',
   pre_request: 'agent-start',
   postrequest: 'agent-stop',
-  post_request: 'agent-stop'
+  post_request: 'agent-stop',
+  // Antigravity CLI (`agy`) — model-invocation lifecycle events. `pretooluse`/
+  // `posttooluse`/`stop` already mapped above under the Claude block.
+  preinvocation: 'agent-start',
+  postinvocation: 'agent-stop'
 }
 
 /**

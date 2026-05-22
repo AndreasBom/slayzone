@@ -29,11 +29,13 @@ import {
   useSensor,
   useSensors,
   type CollisionDetection,
+  type DraggableSyntheticListeners,
   type DragEndEvent,
   type DragStartEvent
 } from '@dnd-kit/core'
 import {
   SortableContext,
+  arrayMove,
   useSortable,
   verticalListSortingStrategy
 } from '@dnd-kit/sortable'
@@ -144,6 +146,10 @@ interface GroupDropData {
   groupValue: string
 }
 
+interface ProjectDragData {
+  kind: 'project'
+}
+
 interface TaskBranchCtx {
   childrenByParent: Map<string, Task[]>
   activeTaskId: string | null
@@ -239,30 +245,47 @@ function rowGroupValue(
 }
 
 
-function TaskRow({
-  task,
-  depth,
-  ancestorFlags,
-  ctx
-}: {
+/** Props shared by every tree-row component. */
+interface TaskRowProps {
   task: Task
   depth: number
   ancestorFlags: boolean[]
+  // Set for every row in the temporary group (temp roots AND their subtasks),
+  // not just tasks whose own `is_temporary` is set. Drives the DnD dispatch.
+  inTempGroup: boolean
   ctx: TaskBranchCtx
-}): ReactNode {
+}
+
+/**
+ * Drag-and-drop wiring a row needs in order to render. Sortable rows fill this
+ * from `useSortable`; plain rows (temporary tasks — kept outside the DnD
+ * system) pass `INERT_SORTABLE` so they never register a draggable/droppable
+ * node or receive slide transforms.
+ */
+interface RowSortable {
+  setNodeRef?: (node: HTMLElement | null) => void
+  attributes?: ReturnType<typeof useSortable>['attributes']
+  listeners?: DraggableSyntheticListeners
+  transform: ReturnType<typeof useSortable>['transform']
+  transition?: string
+  isDragging: boolean
+}
+
+const INERT_SORTABLE: RowSortable = {
+  transform: null,
+  transition: undefined,
+  isDragging: false
+}
+
+function TaskRowView({
+  task,
+  depth,
+  ancestorFlags,
+  ctx,
+  sortable
+}: TaskRowProps & { sortable: RowSortable }): ReactNode {
   const isEditing = ctx.editingTaskId === task.id
-  const draggable = ctx.dragEnabled && !task.is_temporary && !isEditing
-  const dragData: TaskRowDragData = {
-    kind: 'task',
-    projectId: task.project_id,
-    groupValue: rowGroupValue(task, ctx.treeGroupBy, ctx.treeGroupPinned, ctx.pinnedSet),
-    parentId: task.parent_id ?? null
-  }
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: task.id,
-    data: dragData,
-    disabled: !draggable
-  })
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = sortable
   // Multi-drag: when the dragged row is part of a multi-selection, every
   // selected row should appear to "lift" together. Hide all selected rows
   // (not just the dragged one) so the floating +N preview is the only
@@ -403,6 +426,8 @@ function TaskRow({
           needsAttention={Boolean(task.needs_attention)}
           alwaysShow
           tooltipSide="right"
+          size={8}
+          activeSize={12}
         />
         {isEditing ? (
           <RenameInput
@@ -427,7 +452,7 @@ function TaskRow({
         )}
         {task.needs_attention && (
           <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
-            Attention
+            Unread
           </span>
         )}
         {ctx.treeShowWorktree && task.worktree_path && (
@@ -516,6 +541,54 @@ function TaskRow({
   return <div>{wrapped}</div>
 }
 
+/**
+ * Sortable variant — the normal case. Owns the `useSortable` binding so
+ * `TaskRowView` stays presentational and `PlainTaskRow` can skip the hook.
+ */
+function SortableTaskRow(props: TaskRowProps): ReactNode {
+  const { task, ctx } = props
+  const isEditing = ctx.editingTaskId === task.id
+  const draggable = ctx.dragEnabled && !isEditing
+  const dragData: TaskRowDragData = {
+    kind: 'task',
+    projectId: task.project_id,
+    groupValue: rowGroupValue(task, ctx.treeGroupBy, ctx.treeGroupPinned, ctx.pinnedSet),
+    parentId: task.parent_id ?? null
+  }
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: task.id,
+    data: dragData,
+    disabled: !draggable
+  })
+  return (
+    <TaskRowView
+      {...props}
+      sortable={{ setNodeRef, attributes, listeners, transform, transition, isDragging }}
+    />
+  )
+}
+
+/**
+ * Plain variant for temporary tasks — no `useSortable`, no drag listeners, not
+ * a drop target. Temp rows also sit outside `SortableContext` (see
+ * `buildRowList`), so they neither drag nor slide during others' drags.
+ */
+function PlainTaskRow(props: TaskRowProps): ReactNode {
+  return <TaskRowView {...props} sortable={INERT_SORTABLE} />
+}
+
+/**
+ * Dispatcher. The whole temporary group is excluded from drag-and-drop —
+ * keyed on `inTempGroup` (group membership), not the task's own
+ * `is_temporary`, so a non-temp subtask of a temp root is excluded too.
+ * Returning a distinct component type per branch also makes React remount
+ * cleanly if a row crosses the boundary (temp task promoted to permanent),
+ * avoiding a hook-count mismatch from a conditional `useSortable`.
+ */
+function TaskRow(props: TaskRowProps): ReactNode {
+  return props.inTempGroup ? <PlainTaskRow {...props} /> : <SortableTaskRow {...props} />
+}
+
 // Floating drag preview — renders portal'd to document.body via DragOverlay,
 // so it escapes the project's `overflow-hidden` collapsible wrapper. Without
 // this, the dragged row's transform is clipped at the project boundary and
@@ -560,15 +633,27 @@ function TaskDragPreview({ tasks }: { tasks: Task[] }): ReactNode {
   )
 }
 
-function HeaderRow({
-  rowId,
-  projectId,
-  group,
-  padTopClass,
-  cols,
-  treeGroupBy,
-  onCreateTemporaryTask
+/** Floating preview shown in the DragOverlay while a project is being
+ *  reordered — a compact header chip (color swatch + name), mirroring the
+ *  "lift the card out" feel of {@link TaskDragPreview}. */
+function ProjectDragPreview({
+  project
 }: {
+  project: { name: string; color: string }
+}): ReactNode {
+  return (
+    <div className="flex h-10 items-center gap-2 rounded-lg bg-surface-2/95 px-2.5 text-sm font-semibold text-foreground shadow-lg ring-1 ring-border">
+      <span
+        aria-hidden
+        className="size-2.5 shrink-0 rounded-full"
+        style={{ backgroundColor: project.color }}
+      />
+      <span className="truncate max-w-[220px]">{project.name}</span>
+    </div>
+  )
+}
+
+interface HeaderRowProps {
   rowId: string
   projectId: string
   group: TreeGroup
@@ -576,19 +661,30 @@ function HeaderRow({
   cols: import('@slayzone/projects/shared').ColumnConfig[] | null
   treeGroupBy: 'none' | 'status' | 'priority'
   onCreateTemporaryTask?: (projectId: string) => void
-}): ReactNode {
-  // Sortable participant for tween-only — header slides with surrounding rows
-  // during pre-slide but cannot be dragged as a source. `draggable: true`
-  // disables drag listeners; `droppable` enabled only for groups where a drop
-  // would make sense (skip temp/pinned/none). Drop on header routes through
-  // the `kind: 'group'` branch in `handleDragEnd`, landing the dragged set at
-  // index 0 of the group.
+}
+
+/** DnD wiring for a header row; the temporary header passes an inert object. */
+interface HeaderSortable {
+  setNodeRef?: (node: HTMLElement | null) => void
+  transform: ReturnType<typeof useSortable>['transform']
+  transition?: string
+  isOver: boolean
+}
+
+function HeaderRowView({
+  projectId,
+  group,
+  padTopClass,
+  cols,
+  treeGroupBy,
+  onCreateTemporaryTask,
+  sortable
+}: HeaderRowProps & { sortable: HeaderSortable }): ReactNode {
+  const { setNodeRef, transform, transition, isOver } = sortable
+  // Status/priority headers are drop targets — a drop routes through the
+  // `kind: 'group'` branch in `handleDragEnd`, landing the dragged set at
+  // index 0 of the group. Pinned/none/temp headers reject drops.
   const isDroppable = !group.isTemp && !group.isPinned && !group.isNone
-  const { setNodeRef, transform, transition, isOver } = useSortable({
-    id: rowId,
-    data: { kind: 'group', projectId, groupValue: group.key } satisfies GroupDropData,
-    disabled: { draggable: true, droppable: !isDroppable }
-  })
 
   let label: string
   let Icon: typeof Clock | null = null
@@ -666,9 +762,89 @@ function HeaderRow({
   )
 }
 
+/**
+ * Sortable header — a tween-only participant (slides with surrounding rows
+ * during pre-slide) and, for status/priority groups, a drop target.
+ * `draggable: true` disables drag listeners — headers slide, never drag.
+ */
+function SortableHeaderRow(props: HeaderRowProps): ReactNode {
+  const { rowId, projectId, group } = props
+  const isDroppable = !group.isTemp && !group.isPinned && !group.isNone
+  const { setNodeRef, transform, transition, isOver } = useSortable({
+    id: rowId,
+    data: { kind: 'group', projectId, groupValue: group.key } satisfies GroupDropData,
+    disabled: { draggable: true, droppable: !isDroppable }
+  })
+  return <HeaderRowView {...props} sortable={{ setNodeRef, transform, transition, isOver }} />
+}
+
+/** Plain header for the temporary group — kept outside the DnD system. */
+function PlainHeaderRow(props: HeaderRowProps): ReactNode {
+  return (
+    <HeaderRowView
+      {...props}
+      sortable={{ transform: null, transition: undefined, isOver: false }}
+    />
+  )
+}
+
+/** Dispatcher — the temporary group's header skips `useSortable` entirely. */
+function HeaderRow(props: HeaderRowProps): ReactNode {
+  return props.group.isTemp ? <PlainHeaderRow {...props} /> : <SortableHeaderRow {...props} />
+}
+
 type RowItem =
   | { kind: 'header'; rowId: string; group: TreeGroup; padTopClass: string }
-  | { kind: 'task'; rowId: string; task: Task; depth: number; ancestorFlags: boolean[] }
+  | {
+      kind: 'task'
+      rowId: string
+      task: Task
+      depth: number
+      ancestorFlags: boolean[]
+      // True for every row inside the temporary group, including non-temp
+      // subtasks of a temp root — so the whole subtree stays out of DnD.
+      inTempGroup: boolean
+    }
+
+/**
+ * Wraps a project block in a sortable. `renderProject` is a `.map` closure, so
+ * a hook can't be called inside it directly — this real component provides the
+ * `useSortable` binding via render-prop. `setNodeRef`/`style` go on the project
+ * `Collapsible.Root` (the whole block translates); `listeners` go on the header
+ * row so the whole header is the grab area. Drag is disabled unless `showAll`
+ * (the only mode where the full project list — and thus a complete reorder — is
+ * visible). Id is prefixed `project:` so it never collides with task/header ids.
+ */
+function SortableProject({
+  projectId,
+  disabled,
+  children
+}: {
+  projectId: string
+  disabled: boolean
+  children: (args: {
+    setNodeRef: (el: HTMLElement | null) => void
+    style: CSSProperties
+    listeners: DraggableSyntheticListeners
+    isDragging: boolean
+  }) => ReactNode
+}) {
+  const { setNodeRef, transform, transition, listeners, isDragging } = useSortable({
+    id: `project:${projectId}`,
+    data: { kind: 'project' } satisfies ProjectDragData,
+    disabled
+  })
+  // While dragging, the floating preview renders via DragOverlay — hide the
+  // source block (opacity 0) but keep its layout reserved so
+  // verticalListSortingStrategy can measure rects for the sibling slide.
+  const style: CSSProperties = {
+    transform: isDragging ? undefined : CSS.Transform.toString(transform),
+    transition: isDragging ? undefined : transition,
+    opacity: isDragging ? 0 : 1,
+    pointerEvents: isDragging ? 'none' : undefined
+  }
+  return <>{children({ setNodeRef, style, listeners, isDragging })}</>
+}
 
 export function TreeView({
   projects,
@@ -691,7 +867,11 @@ export function TreeView({
   onTaskReparent,
   onTaskBulkReparent,
   onTaskFieldUpdate,
-  onTaskBulkFieldUpdate
+  onTaskBulkFieldUpdate,
+  onReorderProjects,
+  onSetTasksPinned,
+  onSetCollapsed,
+  onPinnedReorder
 }: SidebarViewContext) {
   const sortedProjects = useMemo(
     () => [...projects].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
@@ -714,15 +894,27 @@ export function TreeView({
   const treeShowSnoozed = useTabStore((s) => s.treeShowSnoozed)
   const treeShowAllOpen = useTabStore((s) => s.treeShowAllOpen)
   const treeShowWorktree = useTabStore((s) => s.treeShowWorktree)
-  const treePinnedTaskIds = useTabStore((s) => s.treePinnedTaskIds)
-  const pinnedSet = useMemo(() => new Set(treePinnedTaskIds), [treePinnedTaskIds])
-  const treeCollapsedTaskIds = useTabStore((s) => s.treeCollapsedTaskIds)
-  const collapsedSet = useMemo(() => new Set(treeCollapsedTaskIds), [treeCollapsedTaskIds])
-  const toggleTreeCollapsedTask = useTabStore((s) => s.toggleTreeCollapsedTask)
-  const toggleTreePinnedTask = useTabStore((s) => s.toggleTreePinnedTask)
+  // Pinned / collapsed are task-intrinsic columns (tasks.pinned / tree_collapsed)
+  // — derived straight from the task list so optimistic updates flow through.
+  const pinnedSet = useMemo(
+    () => new Set(tasks.filter((t) => t.pinned).map((t) => t.id)),
+    [tasks]
+  )
+  const collapsedSet = useMemo(
+    () => new Set(tasks.filter((t) => t.tree_collapsed).map((t) => t.id)),
+    [tasks]
+  )
+  const handleToggleCollapse = useCallback(
+    (taskId: string) => {
+      onSetCollapsed?.(taskId, !collapsedSet.has(taskId))
+    },
+    [onSetCollapsed, collapsedSet]
+  )
   // Hoisted above `childrenByParent` memo so it can react to drag start —
   // dragging a parent transiently collapses its sub-tasks.
   const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null)
+  // Project id (not prefixed) currently being drag-reordered, or null.
+  const [activeDragProjectId, setActiveDragProjectId] = useState<string | null>(null)
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set())
   const selectedTaskIdArr = useMemo(() => [...selectedTaskIds], [selectedTaskIds])
   const treeGroupBy = useTabStore((s) => s.treeGroupBy)
@@ -970,6 +1162,17 @@ export function TreeView({
         groupPinned: treeGroupPinned,
         pinnedIds: pinnedSet
       })
+      // The pinned group's manual order is task-intrinsic (`pin_order`), not the
+      // shared `order` col — re-sort it on that key.
+      const pinnedGroup = groups.find((g) => g.isPinned)
+      if (pinnedGroup) {
+        pinnedGroup.tasks = orderTreeRows(
+          pinnedGroup.tasks,
+          treeOrderBy,
+          treeOrderDir,
+          'pin_order'
+        )
+      }
       result.set(pid, groups)
     }
     return result
@@ -981,7 +1184,9 @@ export function TreeView({
     statusFilter,
     treeGroupTemporary,
     treeGroupPinned,
-    pinnedSet
+    pinnedSet,
+    treeOrderBy,
+    treeOrderDir
   ])
 
   const activeTaskId = useTabStore((s) => {
@@ -1033,17 +1238,35 @@ export function TreeView({
   // header (not the first/last task of the adjacent group), and the
   // visible gap appears at the inter-group boundary — matching user
   // mental model "drop between groups lands between groups".
-  const collisionDetection = useCallback<CollisionDetection>(
-    (args) => closestCenter(args),
-    []
-  )
+  const collisionDetection = useCallback<CollisionDetection>((args) => {
+    const kind = (args.active.data.current as { kind?: string } | undefined)?.kind
+    // A project drag may only land on another project header — filter the
+    // droppable set so `over` is never a task row / group header (which would
+    // make the drop a silent no-op).
+    if (kind === 'project') {
+      return closestCenter({
+        ...args,
+        droppableContainers: args.droppableContainers.filter(
+          (c) => (c.data.current as { kind?: string } | undefined)?.kind === 'project'
+        )
+      })
+    }
+    return closestCenter(args)
+  }, [])
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
+    // Project drags get their own overlay preview, not task-drag bookkeeping.
+    // `active.id` is the prefixed sortable id (`project:<id>`) — strip it.
+    if ((event.active.data.current as { kind?: string } | undefined)?.kind === 'project') {
+      setActiveDragProjectId((event.active.id as string).replace(/^project:/, ''))
+      return
+    }
     setActiveDragTaskId(event.active.id as string)
   }, [])
 
   const handleDragCancel = useCallback(() => {
     setActiveDragTaskId(null)
+    setActiveDragProjectId(null)
   }, [])
 
   // Multi-selection — Shift = sibling range, Cmd/Ctrl = toggle individual,
@@ -1203,9 +1426,27 @@ export function TreeView({
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       setActiveDragTaskId(null)
+      setActiveDragProjectId(null)
       const { active, over } = event
       if (!over) return
-      const activeData = active.data.current as TaskRowDragData | undefined
+      const activeData = active.data.current as
+        | TaskRowDragData
+        | GroupDropData
+        | ProjectDragData
+        | undefined
+
+      // === Project reorder. Drag data kind='project'; ids are prefixed
+      // `project:<id>`. arrayMove over the FULL sorted list so every id is
+      // submitted — `db:projects:reorder` requires the complete set.
+      if (activeData?.kind === 'project') {
+        if (active.id === over.id) return
+        const oldIndex = sortedProjects.findIndex((p) => `project:${p.id}` === active.id)
+        const newIndex = sortedProjects.findIndex((p) => `project:${p.id}` === over.id)
+        if (oldIndex === -1 || newIndex === -1) return
+        onReorderProjects(arrayMove(sortedProjects, oldIndex, newIndex).map((p) => p.id))
+        return
+      }
+
       if (!activeData || activeData.kind !== 'task') return
       const sourceId = active.id as string
 
@@ -1293,17 +1534,15 @@ export function TreeView({
         // priority unchanged (pinning is independent). For sources already
         // pinned, toggle would unpin — guard with pinnedSet check.
         if (newGroup.isPinned) {
-          for (const id of movedIds) {
-            if (!pinnedSet.has(id)) toggleTreePinnedTask(id)
-          }
+          const toPin = movedIds.filter((id) => !pinnedSet.has(id))
+          if (toPin.length > 0) onSetTasksPinned?.(toPin, true)
           return
         }
         // Source leaving the pinned bucket → unpin (status/priority change
         // applied by the dispatch below).
         if (activeData.groupValue === PINNED_GROUP_KEY) {
-          for (const id of movedIds) {
-            if (pinnedSet.has(id)) toggleTreePinnedTask(id)
-          }
+          const toUnpin = movedIds.filter((id) => pinnedSet.has(id))
+          if (toUnpin.length > 0) onSetTasksPinned?.(toUnpin, false)
         }
 
         // No-op: same group AND insertion at source's original position.
@@ -1394,9 +1633,8 @@ export function TreeView({
         if (g.isPinned) {
           const allPinned = movedIds.every((id) => pinnedSet.has(id))
           if (!allPinned) {
-            for (const id of movedIds) {
-              if (!pinnedSet.has(id)) toggleTreePinnedTask(id)
-            }
+            const toPin = movedIds.filter((id) => !pinnedSet.has(id))
+            if (toPin.length > 0) onSetTasksPinned?.(toPin, true)
             return
           }
         }
@@ -1406,9 +1644,8 @@ export function TreeView({
           activeData.groupValue === PINNED_GROUP_KEY &&
           targetGroupKey !== PINNED_GROUP_KEY
         ) {
-          for (const id of movedIds) {
-            if (pinnedSet.has(id)) toggleTreePinnedTask(id)
-          }
+          const toUnpin = movedIds.filter((id) => pinnedSet.has(id))
+          if (toUnpin.length > 0) onSetTasksPinned?.(toUnpin, false)
         }
         siblings = g.tasks
       } else {
@@ -1521,7 +1758,8 @@ export function TreeView({
             }
             return
           }
-          onTaskReorder?.(newSiblingIds)
+          if (targetGroupKey === PINNED_GROUP_KEY) onPinnedReorder?.(newSiblingIds)
+          else onTaskReorder?.(newSiblingIds)
           inheritOrderByField(sourceId, targetId)
           return
         }
@@ -1539,7 +1777,8 @@ export function TreeView({
 
       // Multi-drag dispatch.
       if (allSameParent) {
-        onTaskReorder?.(newSiblingIds)
+        if (targetGroupKey === PINNED_GROUP_KEY) onPinnedReorder?.(newSiblingIds)
+        else onTaskReorder?.(newSiblingIds)
       } else {
         onTaskBulkReparent?.(movedIds, targetParent, newSiblingIds)
       }
@@ -1585,7 +1824,11 @@ export function TreeView({
       tasksById,
       tasks,
       wouldCycle,
-      inheritOrderByField
+      inheritOrderByField,
+      sortedProjects,
+      onReorderProjects,
+      onSetTasksPinned,
+      onPinnedReorder
     ]
   )
 
@@ -1593,28 +1836,38 @@ export function TreeView({
   // sub-tasks). Render order = sortable measurement order. Solo-`none` group
   // skips its header — no companions to disambiguate, so the rows just look
   // like the project's default list.
-  const buildRowList = (groups: TreeGroup[], projectId: string): { rows: RowItem[] } => {
+  const buildRowList = (
+    groups: TreeGroup[],
+    projectId: string
+  ): { rows: RowItem[]; sortableRowIds: string[] } => {
     const rows: RowItem[] = []
+    // Ids that participate in `SortableContext`. The temporary group is
+    // excluded wholesale — its rows render plain and never slide during a drag.
+    const sortableRowIds: string[] = []
     const hasCompanions = groups.length > 1
     for (let gi = 0; gi < groups.length; gi++) {
       const g = groups[gi]
+      const inDnd = !g.isTemp
       const showHeader = !g.isNone || hasCompanions
       if (showHeader) {
+        const headerRowId = `header:${projectId}:${g.key}`
         rows.push({
           kind: 'header',
-          rowId: `header:${projectId}:${g.key}`,
+          rowId: headerRowId,
           group: g,
           padTopClass: gi === 0 ? 'pt-2' : 'pt-4'
         })
+        if (inDnd) sortableRowIds.push(headerRowId)
       }
       const walk = (t: Task, depth: number, ancestorFlags: boolean[]): void => {
-        rows.push({ kind: 'task', rowId: t.id, task: t, depth, ancestorFlags })
+        rows.push({ kind: 'task', rowId: t.id, task: t, depth, ancestorFlags, inTempGroup: g.isTemp })
+        if (inDnd) sortableRowIds.push(t.id)
         const kids = childrenByParent.get(t.id) ?? []
         kids.forEach((k, i) => walk(k, depth + 1, [...ancestorFlags, i < kids.length - 1]))
       }
       g.tasks.forEach((t, i) => walk(t, 1, [i < g.tasks.length - 1]))
     }
-    return { rows }
+    return { rows, sortableRowIds }
   }
 
   const renderProject = (project: (typeof sortedProjects)[number]) => {
@@ -1626,11 +1879,11 @@ export function TreeView({
       selectedProjectId === project.id && activeTabType === 'home' && !isContextActive
     const dragEnabled = Boolean(onTaskReorder) && Boolean(onTaskMove)
     const cols = columnsByProjectId?.get(project.id) ?? null
-    // Flat row list: headers + tasks in DFS order. Header rows participate
-    // in the SortableContext so they tween together with surrounding rows,
-    // but their drag listeners are disabled — they slide, they don't drag.
-    const { rows } = buildRowList(groups, project.id)
-    const rowIds = rows.map((r) => r.rowId)
+    // Flat row list: headers + tasks in DFS order. Non-temp header rows
+    // participate in the SortableContext so they tween together with
+    // surrounding rows, but their drag listeners are disabled — they slide,
+    // they don't drag. The temporary group is excluded from `sortableRowIds`.
+    const { rows, sortableRowIds } = buildRowList(groups, project.id)
     const flatTaskIds = rows.flatMap((r) => (r.kind === 'task' ? [r.rowId] : []))
     // Compute first/last-in-run flags for each selected task, scanning
     // adjacency in flat render order. Skipped when fewer than 2 selected
@@ -1677,117 +1930,131 @@ export function TreeView({
       onCancelEdit: handleCancelEdit,
       tasksWithChildren,
       collapsedTaskIds: collapsedSet,
-      onToggleCollapse: toggleTreeCollapsedTask
+      onToggleCollapse: handleToggleCollapse
     }
-    // Every element (group headers, root rows, sub-rows) is a sortable item
-    // in one flat list, so `verticalListSortingStrategy` slides them
-    // uniformly. Headers are sortable participants with drag DISABLED — they
-    // tween with surrounding rows during pre-slide but can't be dragged as a
-    // source. Drop on a header routes through `kind: 'group'` → insert at
-    // index 0 of that group.
+    // Every non-temp element (group headers, root rows, sub-rows) is a
+    // sortable item in one flat list, so `verticalListSortingStrategy` slides
+    // them uniformly. Headers are sortable participants with drag DISABLED —
+    // they tween with surrounding rows during pre-slide but can't be dragged
+    // as a source. Drop on a header routes through `kind: 'group'` → insert at
+    // index 0 of that group. The temporary group is excluded entirely: its
+    // rows render plain (no `useSortable`) and never drag, drop, or slide.
     return (
-      <Collapsible.Root
-        key={project.id}
-        open={isOpen}
-        onOpenChange={(open) => setOpenProjects((s) => ({ ...s, [project.id]: open }))}
-        className="rounded-lg overflow-hidden bg-surface-1"
-      >
-        <div
-          style={{
-            backgroundColor: `color-mix(in oklch, ${project.color} ${projectIsActive(project.id) ? 22 : 10}%, transparent)`
-          }}
-          className="group/projectrow relative flex h-10 items-center transition-[filter] hover:brightness-125"
-        >
-          <Collapsible.Trigger
-            aria-label={isOpen ? `Collapse ${project.name}` : `Expand ${project.name}`}
-            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground"
+      <SortableProject key={project.id} projectId={project.id} disabled={!showAll}>
+        {({ setNodeRef, style, listeners }) => (
+          <Collapsible.Root
+            ref={setNodeRef}
+            style={style}
+            open={isOpen}
+            onOpenChange={(open) => setOpenProjects((s) => ({ ...s, [project.id]: open }))}
+            className="rounded-lg overflow-hidden bg-surface-1"
           >
-            <ChevronDown
-              className={cn('size-3.5 transition-transform duration-200', !isOpen && '-rotate-90')}
-            />
-          </Collapsible.Trigger>
-          <Collapsible.Trigger asChild>
-            <button
-              type="button"
-              className="flex flex-1 items-center gap-2 rounded-md py-1.5 text-sm font-semibold min-w-0"
+            <div
+              {...listeners}
+              style={{
+                backgroundColor: `color-mix(in oklch, ${project.color} ${projectIsActive(project.id) ? 22 : 10}%, transparent)`
+              }}
+              className="group/projectrow relative flex h-10 items-center transition-[filter] hover:brightness-125"
             >
-              <span className="truncate flex-1 text-left">{project.name}</span>
-            </button>
-          </Collapsible.Trigger>
-          <button
-            type="button"
-            onClick={() => onSelectProject(project.id)}
-            aria-label={`Open ${project.name} home`}
-            className={cn(
-              'inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-[color,background-color]',
-              isHomeActive
-                ? 'bg-foreground text-background shadow-sm hover:bg-foreground/90'
-                : 'text-muted-foreground/70 hover:text-foreground'
-            )}
-          >
-            <Home className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              useTabStore.getState().setSelectedProjectId(project.id)
-              useTabStore.getState().setActiveView('context')
-            }}
-            aria-label={`Context Manager for ${project.name}`}
-            className={cn(
-              'relative inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-[color,background-color]',
-              isContextActive
-                ? 'bg-foreground text-background shadow-sm hover:bg-foreground/90'
-                : 'text-muted-foreground/70 hover:text-foreground'
-            )}
-          >
-            <BookOpen className="size-3.5" />
-            <ContextStaleDot count={staleSkillCounts.get(project.id) ?? 0} />
-          </button>
-          <button
-            type="button"
-            onClick={() => onProjectSettings(project)}
-            aria-label={`Settings for ${project.name}`}
-            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground transition-colors mr-0.5"
-          >
-            <Settings className="size-3.5" />
-          </button>
-        </div>
-        <Collapsible.Content className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
-          <div className="flex flex-col pr-2 pt-2 pb-2">
-            {projectTasks.length === 0 && groups.length === 0 ? (
-              <span className="text-xs italic text-muted-foreground/60 px-2 py-1">
-                No active tasks
-              </span>
-            ) : (
-              <SortableContext items={rowIds} strategy={verticalListSortingStrategy}>
-                {rows.map((r) =>
-                  r.kind === 'header' ? (
-                    <HeaderRow
-                      key={r.rowId}
-                      rowId={r.rowId}
-                      projectId={project.id}
-                      group={r.group}
-                      padTopClass={r.padTopClass}
-                      cols={cols}
-                      treeGroupBy={treeGroupBy}
-                      onCreateTemporaryTask={onCreateTemporaryTask}
-                    />
-                  ) : (
-                    <TaskRow
-                      key={r.rowId}
-                      task={r.task}
-                      depth={r.depth}
-                      ancestorFlags={r.ancestorFlags}
-                      ctx={branchCtx}
-                    />
-                  )
+              <Collapsible.Trigger
+                aria-label={isOpen ? `Collapse ${project.name}` : `Expand ${project.name}`}
+                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground"
+              >
+                <ChevronDown
+                  className={cn(
+                    'size-3.5 transition-transform duration-200',
+                    !isOpen && '-rotate-90'
+                  )}
+                />
+              </Collapsible.Trigger>
+              <Collapsible.Trigger asChild>
+                <button
+                  type="button"
+                  className="flex flex-1 items-center gap-2 rounded-md py-1.5 text-sm font-semibold min-w-0"
+                >
+                  <span className="truncate flex-1 text-left">{project.name}</span>
+                </button>
+              </Collapsible.Trigger>
+              <button
+                type="button"
+                onClick={() => onSelectProject(project.id)}
+                aria-label={`Open ${project.name} home`}
+                className={cn(
+                  'inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-[color,background-color]',
+                  isHomeActive
+                    ? 'bg-foreground text-background shadow-sm hover:bg-foreground/90'
+                    : 'text-muted-foreground/70 hover:text-foreground'
                 )}
-              </SortableContext>
-            )}
-          </div>
-        </Collapsible.Content>
-      </Collapsible.Root>
+              >
+                <Home className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  useTabStore.getState().setSelectedProjectId(project.id)
+                  useTabStore.getState().setActiveView('context')
+                }}
+                aria-label={`Context Manager for ${project.name}`}
+                className={cn(
+                  'relative inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-[color,background-color]',
+                  isContextActive
+                    ? 'bg-foreground text-background shadow-sm hover:bg-foreground/90'
+                    : 'text-muted-foreground/70 hover:text-foreground'
+                )}
+              >
+                <BookOpen className="size-3.5" />
+                <ContextStaleDot count={staleSkillCounts.get(project.id) ?? 0} />
+              </button>
+              <button
+                type="button"
+                onClick={() => onProjectSettings(project)}
+                aria-label={`Settings for ${project.name}`}
+                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground transition-colors mr-0.5"
+              >
+                <Settings className="size-3.5" />
+              </button>
+            </div>
+            <Collapsible.Content className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+              <div className="flex flex-col pr-2 pt-2 pb-3">
+                {projectTasks.length === 0 && groups.length === 0 ? (
+                  <span className="text-xs italic text-muted-foreground/60 px-2 py-1">
+                    No active tasks
+                  </span>
+                ) : (
+                  <SortableContext
+                    items={sortableRowIds}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    {rows.map((r) =>
+                      r.kind === 'header' ? (
+                        <HeaderRow
+                          key={r.rowId}
+                          rowId={r.rowId}
+                          projectId={project.id}
+                          group={r.group}
+                          padTopClass={r.padTopClass}
+                          cols={cols}
+                          treeGroupBy={treeGroupBy}
+                          onCreateTemporaryTask={onCreateTemporaryTask}
+                        />
+                      ) : (
+                        <TaskRow
+                          key={r.rowId}
+                          task={r.task}
+                          depth={r.depth}
+                          ancestorFlags={r.ancestorFlags}
+                          inTempGroup={r.inTempGroup}
+                          ctx={branchCtx}
+                        />
+                      )
+                    )}
+                  </SortableContext>
+                )}
+              </div>
+            </Collapsible.Content>
+          </Collapsible.Root>
+        )}
+      </SortableProject>
     )
   }
 
@@ -1800,7 +2067,10 @@ export function TreeView({
           rightmost button aligns with project Settings icon by construction.
           pl clears macOS traffic lights (80px total - SidebarGroup p-2 (8) -
           this wrapper's px-1 (4) = 68px). */}
-      <div className="relative flex items-center h-11" style={{ paddingLeft: 68 }}>
+      <div
+        className="relative flex items-center h-11 window-drag-region"
+        style={{ paddingLeft: 68 }}
+      >
         <div
           aria-hidden
           className="pointer-events-none absolute left-1/2 -translate-x-1/2 flex items-center gap-1 select-none text-xs font-medium tracking-wide text-foreground @max-[300px]:hidden"
@@ -1816,7 +2086,7 @@ export function TreeView({
                 type="button"
                 onClick={() => openSearch()}
                 aria-label="Search"
-                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors window-no-drag"
               >
                 <Search className="size-3.5" />
               </button>
@@ -1832,7 +2102,7 @@ export function TreeView({
                 type="button"
                 aria-label="Add project"
                 onClick={() => useDialogStore.getState().openCreateProject()}
-                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors mr-0.5"
+                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors mr-0.5 window-no-drag"
               >
                 <Plus className="size-3.5" />
               </button>
@@ -1850,22 +2120,33 @@ export function TreeView({
         onDragEnd={handleDragEnd}
         onDragCancel={handleDragCancel}
       >
-        {visibleProjects.map(renderProject)}
+        <SortableContext
+          items={visibleProjects.map((p) => `project:${p.id}`)}
+          strategy={verticalListSortingStrategy}
+        >
+          {visibleProjects.map(renderProject)}
+        </SortableContext>
         <DragOverlay dropAnimation={null}>
-          {activeDragTaskId
+          {activeDragProjectId
             ? (() => {
-                const active = tasksById.get(activeDragTaskId)
-                if (!active) return null
-                const isMulti = selectedTaskIds.has(activeDragTaskId) && selectedTaskIds.size > 1
-                const ids = isMulti
-                  ? getMovedIdsInRenderOrder(active.project_id, selectedTaskIds)
-                  : [activeDragTaskId]
-                const movedTasks = ids
-                  .map((id) => tasksById.get(id))
-                  .filter((t): t is Task => Boolean(t))
-                return <TaskDragPreview tasks={movedTasks} />
+                const proj = sortedProjects.find((p) => p.id === activeDragProjectId)
+                return proj ? <ProjectDragPreview project={proj} /> : null
               })()
-            : null}
+            : activeDragTaskId
+              ? (() => {
+                  const active = tasksById.get(activeDragTaskId)
+                  if (!active) return null
+                  const isMulti =
+                    selectedTaskIds.has(activeDragTaskId) && selectedTaskIds.size > 1
+                  const ids = isMulti
+                    ? getMovedIdsInRenderOrder(active.project_id, selectedTaskIds)
+                    : [activeDragTaskId]
+                  const movedTasks = ids
+                    .map((id) => tasksById.get(id))
+                    .filter((t): t is Task => Boolean(t))
+                  return <TaskDragPreview tasks={movedTasks} />
+                })()
+              : null}
         </DragOverlay>
       </DndContext>
       {hiddenProjects.length > 0 && (

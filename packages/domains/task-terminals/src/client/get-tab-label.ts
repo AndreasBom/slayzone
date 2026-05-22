@@ -12,6 +12,8 @@ export function getModeLabel(mode: TerminalMode): string {
       return 'Cursor'
     case 'gemini':
       return 'Gemini'
+    case 'antigravity':
+      return 'Antigravity'
     case 'opencode':
       return 'OpenCode'
     case 'copilot':

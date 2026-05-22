@@ -290,6 +290,10 @@ function App(): React.JSX.Element {
     bulkDelete: rawBulkDelete,
     contextMenuUpdate: rawContextMenuUpdate,
     bulkContextMenuUpdate: rawBulkContextMenuUpdate,
+    setTaskPinned,
+    setTasksPinned,
+    setTaskCollapsed,
+    reorderPinnedTasks,
     clearBlockers,
     updateProject,
     reorderProjects,
@@ -330,7 +334,6 @@ function App(): React.JSX.Element {
   const activeView = useTabStore((s) => s.activeView)
   const sidebarAutoHide = useTabStore((s) => s.sidebarAutoHide)
   const sidebarView = useTabStore((s) => s.sidebarView)
-  const treePinnedTaskIds = useTabStore((s) => s.treePinnedTaskIds)
   const selectedProjectId = useTabStore((s) => s.selectedProjectId)
   const {
     setActiveTabIndex,
@@ -753,12 +756,35 @@ function App(): React.JSX.Element {
     void window.api.taskWindow.setPrimaryActive(id)
   }, [activeTab])
 
-  // Clear needs_attention flag when user focuses a task tab.
+  // Mark a task "read" (clear needs_attention) when the user *navigates into* it —
+  // i.e. it becomes the active tab. Deliberately NOT cleared while the task merely
+  // stays active: that is what lets "Mark as unread" stick even though the task is
+  // on screen. Two refs handle the timing:
+  //  - activatedTaskRef: id of the current activation. A change => a fresh open.
+  //  - readConsumedRef: the id we've already issued the read-clear for this
+  //    activation. Ensures a late tasksMap update (task data arriving after the tab
+  //    switch) still clears exactly once, and a tasksMap update caused by a later
+  //    "Mark as unread" does NOT re-clear it.
+  const activatedTaskRef = useRef<string | null>(null)
+  const readConsumedRef = useRef<string | null>(null)
   useEffect(() => {
-    if (activeTab?.type !== 'task') return
-    const task = tasksMap.get(activeTab.taskId)
-    if (!task?.needs_attention) return
-    void window.api.db.updateTask({ id: activeTab.taskId, needsAttention: false }).catch(() => {})
+    const activeTaskId = activeTab?.type === 'task' ? activeTab.taskId : null
+    if (!activeTaskId) {
+      activatedTaskRef.current = null
+      return
+    }
+    // Fresh activation: reset the once-per-activation read guard.
+    if (activeTaskId !== activatedTaskRef.current) {
+      activatedTaskRef.current = activeTaskId
+      readConsumedRef.current = null
+    }
+    if (readConsumedRef.current === activeTaskId) return
+    const task = tasksMap.get(activeTaskId)
+    if (!task) return // data not loaded yet — wait for the next tasksMap update
+    readConsumedRef.current = activeTaskId
+    if (task.needs_attention) {
+      void window.api.db.updateTask({ id: activeTaskId, needsAttention: false }).catch(() => {})
+    }
   }, [activeTab, tasksMap])
   useEffect(() => {
     if (activeTaskProjectId && activeTaskProjectId !== selectedProjectId)
@@ -1834,6 +1860,7 @@ function App(): React.JSX.Element {
 
   const handleProjectDeleted = (): void => {
     if (deletingProject) {
+      if (editingProject?.id === deletingProject.id) closeProjectSettings()
       deleteProject(deletingProject.id, selectedProjectId, setSelectedProjectId)
       useDialogStore.getState().closeDeleteProject()
     }
@@ -1875,7 +1902,7 @@ function App(): React.JSX.Element {
   // Projects rail: align horizontally with project cards + vertically with the
   //   TabBar (default x=10 sits near the rail's icon center at ~36px).
   useEffect(() => {
-    const pos = sidebarView === 'tree' ? { x: 24, y: 26 } : { x: 16, y: 20 }
+    const pos = sidebarView === 'tree' ? { x: 24, y: 14 } : { x: 16, y: 20 }
     window.api.window.setTrafficLightPosition(pos)
   }, [sidebarView])
   const activePtyCount = usePtyStatus().size
@@ -2199,6 +2226,9 @@ function App(): React.JSX.Element {
             onTaskBulkFieldUpdate={(taskIds, updates) => {
               void rawBulkContextMenuUpdate(taskIds, updates)
             }}
+            onSetTasksPinned={setTasksPinned}
+            onSetCollapsed={setTaskCollapsed}
+            onPinnedReorder={reorderPinnedTasks}
             terminalStates={terminalStates}
             taskProgress={taskProgress}
             doneTaskIds={doneTaskIds}
@@ -2231,8 +2261,11 @@ function App(): React.JSX.Element {
                 onShutdownAgent={
                   activeAgentTaskIds.has(task.id) ? () => shutdownAgentForTask(task.id) : undefined
                 }
-                isPinned={treePinnedTaskIds.includes(task.id)}
-                onTogglePin={() => useTabStore.getState().toggleTreePinnedTask(task.id)}
+                isPinned={!!task.pinned}
+                onTogglePin={() => setTaskPinned(task.id, !task.pinned)}
+                canMarkUnread={
+                  terminalStates.get(task.id) === 'idle' && !task.needs_attention
+                }
               >
                 {child}
               </TaskContextMenu>
@@ -2264,8 +2297,11 @@ function App(): React.JSX.Element {
 
           <div
             id="right-column"
-            className={`flex-1 flex min-w-0 bg-sidebar pb-2 pr-2 ${headerHidden ? 'pt-2' : ''} ${zenMode || sidebarAutoHide ? 'pl-2' : ''}`}
+            className={`relative flex-1 flex min-w-0 bg-sidebar pb-2 pr-2 ${headerHidden ? 'pt-2' : ''} ${zenMode || sidebarAutoHide ? 'pl-2' : ''}`}
           >
+            {headerHidden && (
+              <div aria-hidden className="absolute inset-x-0 top-0 h-2 window-drag-region" />
+            )}
             <div id="right-main" className="flex-1 flex flex-col min-w-0 min-h-0">
               {!headerHidden && (
                 <div className={zenMode || sidebarAutoHide ? 'pl-16' : ''}>
@@ -2593,20 +2629,37 @@ function App(): React.JSX.Element {
                                               ?.path ??
                                             null
                                           const w = homePanel.homeResolvedWidths[id] ?? 400
+                                          // Boundary resize: the handle before this
+                                          // panel transfers width with the panel to
+                                          // its left (the previous visible panel).
+                                          const visibleHomePanelIds =
+                                            homePanel.orderedHomePanelIds.filter(
+                                              (v) => homePanel.homePanelVisibility[v]
+                                            )
+                                          const leftHomeId =
+                                            i > 0 ? visibleHomePanelIds[i - 1] : undefined
+                                          const homeMinWidth = (pid: string): number =>
+                                            pid === 'kanban' ? 400 : 200
                                           return (
                                             <React.Fragment key={id}>
-                                              {i > 0 && (
+                                              {i > 0 && leftHomeId && (
                                                 <ResizeHandle
-                                                  width={w}
-                                                  minWidth={id === 'kanban' ? 400 : 200}
-                                                  onWidthChange={(w) =>
+                                                  leftWidth={
+                                                    homePanel.homeResolvedWidths[leftHomeId] ?? 400
+                                                  }
+                                                  rightWidth={w}
+                                                  leftMinWidth={homeMinWidth(leftHomeId)}
+                                                  rightMinWidth={homeMinWidth(id)}
+                                                  onResize={(lw, rw) =>
                                                     updatePanelSizes({
-                                                      [HOME_PANEL_SIZE_KEY[id]]: w
+                                                      [HOME_PANEL_SIZE_KEY[leftHomeId]]: lw,
+                                                      [HOME_PANEL_SIZE_KEY[id]]: rw
                                                     })
                                                   }
-                                                  onReset={() =>
+                                                  onReset={() => {
+                                                    resetPanelSize(HOME_PANEL_SIZE_KEY[leftHomeId])
                                                     resetPanelSize(HOME_PANEL_SIZE_KEY[id])
-                                                  }
+                                                  }}
                                                 />
                                               )}
                                               <div
@@ -2838,10 +2891,24 @@ function App(): React.JSX.Element {
                     globalAgentPanelState.isOpen &&
                     !hideSidebarPanel && (
                       <ResizeHandle
-                        width={globalAgentPanelState.panelWidth}
-                        minWidth={GLOBAL_AGENT_PANEL_MIN_WIDTH}
-                        maxWidth={GLOBAL_AGENT_PANEL_MAX_WIDTH}
-                        onWidthChange={(w) => setGlobalAgentPanelState({ panelWidth: w })}
+                        // Edge side panel against the flex-1 main area. The boundary
+                        // handle needs two widths; model the left (main) side as
+                        // effectively unbounded so the drag just resizes this panel
+                        // and the flex-1 main absorbs the slack. 100_000 is large
+                        // enough that the left clamp never binds yet keeps the
+                        // `total - newLeft` arithmetic exact. Max is enforced here.
+                        leftWidth={100_000}
+                        rightWidth={globalAgentPanelState.panelWidth}
+                        leftMinWidth={0}
+                        rightMinWidth={GLOBAL_AGENT_PANEL_MIN_WIDTH}
+                        onResize={(_lw, rw) =>
+                          setGlobalAgentPanelState({
+                            panelWidth: Math.min(
+                              GLOBAL_AGENT_PANEL_MAX_WIDTH,
+                              Math.max(GLOBAL_AGENT_PANEL_MIN_WIDTH, rw)
+                            )
+                          })
+                        }
                         onDragStart={() => setIsSidePanelResizing(true)}
                         onDragEnd={() => setIsSidePanelResizing(false)}
                         onReset={() =>
@@ -2881,10 +2948,20 @@ function App(): React.JSX.Element {
                   )}
                   {agentStatusState.isLocked && (
                     <ResizeHandle
-                      width={agentStatusState.panelWidth}
-                      minWidth={AGENT_STATUS_PANEL_MIN_WIDTH}
-                      maxWidth={AGENT_STATUS_PANEL_MAX_WIDTH}
-                      onWidthChange={(w) => setAgentStatusState({ panelWidth: w })}
+                      // Edge side panel — left side modeled as unbounded (see the
+                      // GlobalAgentSidePanel handle above); max enforced here.
+                      leftWidth={100_000}
+                      rightWidth={agentStatusState.panelWidth}
+                      leftMinWidth={0}
+                      rightMinWidth={AGENT_STATUS_PANEL_MIN_WIDTH}
+                      onResize={(_lw, rw) =>
+                        setAgentStatusState({
+                          panelWidth: Math.min(
+                            AGENT_STATUS_PANEL_MAX_WIDTH,
+                            Math.max(AGENT_STATUS_PANEL_MIN_WIDTH, rw)
+                          )
+                        })
+                      }
                       onDragStart={() => setIsSidePanelResizing(true)}
                       onDragEnd={() => setIsSidePanelResizing(false)}
                       onReset={() =>

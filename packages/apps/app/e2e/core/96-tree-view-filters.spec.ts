@@ -14,6 +14,25 @@ async function patchStore(page: Page, patch: TreePatch) {
   }, patch)
 }
 
+// Pin state is a task-intrinsic column (`tasks.pinned` / `pin_order`), not
+// view-store state — drive it through the DB. Passing `[]` unpins everything.
+async function setPinned(page: Page, taskIds: string[]) {
+  await page.evaluate(async (ids) => {
+    const data = await window.api.db.loadBoardData()
+    const tasks = data.tasks as Array<{ id: string; pinned?: boolean }>
+    const pinSet = new Set(ids)
+    for (const t of tasks) {
+      if (t.pinned && !pinSet.has(t.id)) {
+        await window.api.db.updateTask({ id: t.id, pinned: false, pinOrder: 0 })
+      }
+    }
+    for (let i = 0; i < ids.length; i++) {
+      await window.api.db.updateTask({ id: ids[i], pinned: true, pinOrder: i })
+    }
+  }, taskIds)
+  await seed(page).refreshData()
+}
+
 async function setTabs(page: Page, taskIds: string[]) {
   await page.evaluate((ids) => {
     const store = (
@@ -146,12 +165,12 @@ test.describe('TreeView setting combinations', () => {
       treeShowOnlyActive: false,
       treeShowTemporary: true,
       treeShowAllOpen: true,
-      treePinnedTaskIds: [],
       treeCrossOutDone: false,
       treeShowStatus: false,
       treeShowPriority: false,
       treeShowWorktree: false
     })
+    await setPinned(mainWindow, [])
     // Anchor open tab keeps the project in TreeView's "active" set.
     await setTabs(mainWindow, [rootInProgress])
     await seed(mainWindow).refreshData()
@@ -168,6 +187,36 @@ test.describe('TreeView setting combinations', () => {
     await expect(taskRow(mainWindow, rootInProgress)).toBeVisible()
     await expect(taskRow(mainWindow, rootTodo)).toHaveCount(0)
     await expect(taskRow(mainWindow, rootDone)).toHaveCount(0)
+  })
+
+  test('top toolbar remains a window drag region', async ({ mainWindow }) => {
+    const regions = await mainWindow.evaluate(() => {
+      const searchButton = document.querySelector<HTMLButtonElement>('button[aria-label="Search"]')
+      const settingsButton = document.querySelector<HTMLButtonElement>(
+        'button[aria-label="View settings"]'
+      )
+      const addButton = document.querySelector<HTMLButtonElement>(
+        'button[aria-label="Add project"]'
+      )
+      const toolbar = searchButton?.parentElement?.parentElement as HTMLElement | null
+      if (!toolbar || !searchButton || !settingsButton || !addButton) {
+        throw new Error('Tree toolbar not found')
+      }
+      const region = (el: Element) => getComputedStyle(el).getPropertyValue('-webkit-app-region')
+      return {
+        toolbar: region(toolbar),
+        search: region(searchButton),
+        settings: region(settingsButton),
+        add: region(addButton)
+      }
+    })
+
+    expect(regions).toEqual({
+      toolbar: 'drag',
+      search: 'no-drag',
+      settings: 'no-drag',
+      add: 'no-drag'
+    })
   })
 
   test('archived task never shows', async ({ mainWindow }) => {
@@ -344,10 +393,8 @@ test.describe('TreeView setting combinations', () => {
   })
 
   test('show only active: pinned task always shows', async ({ mainWindow }) => {
-    await patchStore(mainWindow, {
-      treeShowOnlyActive: true,
-      treePinnedTaskIds: [rootDone]
-    })
+    await patchStore(mainWindow, { treeShowOnlyActive: true })
+    await setPinned(mainWindow, [rootDone])
     await expect(taskRow(mainWindow, rootDone)).toBeVisible()
   })
 
@@ -431,9 +478,9 @@ test.describe('TreeView setting combinations', () => {
     // archived + priority. So a pinned temp task shows even with temp hidden.
     await patchStore(mainWindow, {
       treeShowSubtasks: false,
-      treeShowTemporary: false,
-      treePinnedTaskIds: [tempInProgress]
+      treeShowTemporary: false
     })
+    await setPinned(mainWindow, [tempInProgress])
     await expect(taskRow(mainWindow, tempInProgress)).toBeVisible()
   })
 
@@ -441,18 +488,18 @@ test.describe('TreeView setting combinations', () => {
     await patchStore(mainWindow, {
       treeShowSubtasks: false,
       treeShowOnlyActive: true,
-      treeShowAllOpen: false,
-      treePinnedTaskIds: [rootDone]
+      treeShowAllOpen: false
     })
+    await setPinned(mainWindow, [rootDone])
     await expect(taskRow(mainWindow, rootDone)).toBeVisible()
   })
 
   test('pinned task is shortcut: bypasses status filter', async ({ mainWindow }) => {
     await patchStore(mainWindow, {
       treeShowSubtasks: false,
-      treeStatusFilter: ['in_progress'],
-      treePinnedTaskIds: [rootDone]
+      treeStatusFilter: ['in_progress']
     })
+    await setPinned(mainWindow, [rootDone])
     await expect(taskRow(mainWindow, rootDone)).toBeVisible()
   })
 
@@ -465,9 +512,9 @@ test.describe('TreeView setting combinations', () => {
     await seed(mainWindow).refreshData()
     await patchStore(mainWindow, {
       treeShowSubtasks: false,
-      treePriorityFilter: [4],
-      treePinnedTaskIds: [rootDone]
+      treePriorityFilter: [4]
     })
+    await setPinned(mainWindow, [rootDone])
     await expect(taskRow(mainWindow, rootDone)).toHaveCount(0)
   })
 

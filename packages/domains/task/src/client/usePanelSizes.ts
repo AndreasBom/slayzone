@@ -15,6 +15,23 @@ const DEFAULT_SIZES: PanelSizes = {
   processes: 600
 }
 
+/** Smallest width a panel may be dragged to. Web panels fall back to DEFAULT_MIN_WIDTH. */
+const MIN_WIDTHS: Record<string, number> = {
+  terminal: 200,
+  browser: 200,
+  editor: 250,
+  artifacts: 200,
+  diff: 50,
+  settings: 200,
+  processes: 200
+}
+const DEFAULT_MIN_WIDTH = 200
+
+/** Minimum width for a panel id (built-in or `web:*`). */
+export function minWidthFor(id: string): number {
+  return MIN_WIDTHS[id] ?? DEFAULT_MIN_WIDTH
+}
+
 const SETTINGS_KEY = 'taskDetailPanelSizes'
 const HANDLE_WIDTH = 16 // w-4 = 1rem
 // Bump when the storage schema changes to force migration

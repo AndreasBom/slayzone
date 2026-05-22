@@ -182,7 +182,7 @@ import { BrowserPanel, type BrowserPanelHandle } from '@slayzone/task-browser'
 import { FileEditorView, type FileEditorViewHandle } from '@slayzone/file-editor/client'
 import type { EditorOpenFilesState, OpenFileOptions } from '@slayzone/file-editor/shared'
 import { track } from '@slayzone/telemetry/client'
-import { usePanelSizes, resolveWidths } from './usePanelSizes'
+import { usePanelSizes, resolveWidths, minWidthFor } from './usePanelSizes'
 import { usePanelConfig } from './usePanelConfig'
 import { useSubTasks } from './useSubTasks'
 import { usePanelOwnership } from './usePanelOwnership'
@@ -707,7 +707,8 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
   )
 
   // Global panel configuration (which panels are enabled, custom web panels)
-  const { enabledWebPanels, isBuiltinEnabled, getOrderedTaskIds } = usePanelConfig()
+  const { config: panelConfig, updateConfig: updatePanelConfig, enabledWebPanels, isBuiltinEnabled, getOrderedTaskIds } =
+    usePanelConfig()
   const orderedTaskIds = useMemo(() => getOrderedTaskIds(), [getOrderedTaskIds])
   const panelOrderIdx = useMemo(() => {
     const m: Record<string, number> = {}
@@ -717,8 +718,31 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
     return m
   }, [orderedTaskIds])
   const panelOrderStyle = (id: string): { order: number } => ({ order: panelOrderIdx[id] ?? 0 })
-  const getFirstVisibleTaskPanelId = (): string | null =>
-    orderedTaskIds.find((id) => panelVisibility[id] && !ownership.hasOtherOwner(id)) ?? null
+  // Visible panels in display order — used to find a resize handle's left neighbor.
+  const visiblePanelOrder = orderedTaskIds.filter((id) => panelVisibility[id])
+  const getLeftNeighborId = (id: string): string | null => {
+    const i = visiblePanelOrder.indexOf(id)
+    return i > 0 ? visiblePanelOrder[i - 1] : null
+  }
+
+  // Drag-reorder of the PanelToggle button row. Receives the reordered subset of
+  // task-view panel ids (only the buttons actually shown) and merges it back into
+  // the global panel_config.order — the same setting the Settings modal writes,
+  // so panels reflow to match. Hidden/filtered-out panels keep their slots.
+  const handlePanelReorder = useCallback(
+    (reorderedTaskIds: string[]) => {
+      const order = panelConfig.order ?? []
+      const toOrderId = (taskId: string): string => (taskId === 'diff' ? 'git' : taskId)
+      const reorderedOrderIds = reorderedTaskIds.map(toOrderId)
+      const visibleSet = new Set(reorderedOrderIds)
+      let vi = 0
+      const next = order.map((id) =>
+        visibleSet.has(id) ? (reorderedOrderIds[vi++] ?? id) : id
+      )
+      void updatePanelConfig({ ...panelConfig, order: next })
+    },
+    [panelConfig, updatePanelConfig]
+  )
 
   // Auto-claim panels for this window when visible AND no current owner.
   // First-owner priority: subsequent windows opening same panel render a
@@ -801,6 +825,27 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
     () => resolveWidths(panelSizes, panelVisibility, containerWidth),
     [panelSizes, panelVisibility, containerWidth]
   )
+
+  // Renders the divider before `panelId`. Resizing transfers width between the
+  // panel and its left neighbor, so the boundary moves cleanly no matter how
+  // panels are arranged. Returns null when `panelId` is the first visible panel.
+  const renderResizeHandle = (panelId: string): React.ReactNode => {
+    const leftId = getLeftNeighborId(panelId)
+    if (!leftId) return null
+    return (
+      <ResizeHandle
+        leftWidth={resolvedWidths[leftId] ?? 200}
+        rightWidth={resolvedWidths[panelId] ?? 200}
+        leftMinWidth={minWidthFor(leftId)}
+        rightMinWidth={minWidthFor(panelId)}
+        onResize={(lw, rw) => updatePanelSizes({ [leftId]: lw, [panelId]: rw })}
+        onDragStart={() => setIsResizing(true)}
+        onDragEnd={() => setIsResizing(false)}
+        onReset={resetAllPanels}
+        style={panelOrderStyle(panelId)}
+      />
+    )
+  }
 
   // Terminal API (exposed via onReady callback)
   const terminalApiRef = useRef<{
@@ -2575,7 +2620,13 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                     )
                   }
 
-                  return <PanelToggle panels={ordered} onChange={handlePanelToggle} />
+                  return (
+                    <PanelToggle
+                      panels={ordered}
+                      onChange={handlePanelToggle}
+                      onReorder={handlePanelReorder}
+                    />
+                  )
                 })()}
               </div>
             </div>
@@ -2799,6 +2850,9 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                 </div>
               </div>
             )}
+
+            {/* Resize handle before Terminal */}
+            {!compact && panelVisibility.terminal && renderResizeHandle('terminal')}
 
             {/* Terminal Panel */}
             {(compact || panelVisibility.terminal) && (
@@ -3288,17 +3342,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
             )}
 
             {/* Non-terminal panels hidden in compact mode */}
-            {!compact && panelVisibility.browser && getFirstVisibleTaskPanelId() !== 'browser' && (
-              <ResizeHandle
-                width={resolvedWidths.browser ?? 200}
-                minWidth={200}
-                onWidthChange={(w) => updatePanelSizes({ browser: w })}
-                onDragStart={() => setIsResizing(true)}
-                onDragEnd={() => setIsResizing(false)}
-                onReset={resetAllPanels}
-                style={panelOrderStyle('browser')}
-              />
-            )}
+            {!compact && panelVisibility.browser && renderResizeHandle('browser')}
 
             {/* Browser Panel */}
             {!compact && panelVisibility.browser && (
@@ -3340,17 +3384,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
             )}
 
             {/* Resize handle before Editor */}
-            {!compact && panelVisibility.editor && getFirstVisibleTaskPanelId() !== 'editor' && (
-              <ResizeHandle
-                width={resolvedWidths.editor ?? 250}
-                minWidth={250}
-                onWidthChange={(w) => updatePanelSizes({ editor: w })}
-                onDragStart={() => setIsResizing(true)}
-                onDragEnd={() => setIsResizing(false)}
-                onReset={resetAllPanels}
-                style={panelOrderStyle('editor')}
-              />
-            )}
+            {!compact && panelVisibility.editor && renderResizeHandle('editor')}
 
             {/* File Editor Panel */}
             {!compact && panelVisibility.editor && (
@@ -3385,19 +3419,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
             )}
 
             {/* Resize handle before Artifacts */}
-            {!compact &&
-              panelVisibility.artifacts &&
-              getFirstVisibleTaskPanelId() !== 'artifacts' && (
-                <ResizeHandle
-                  width={resolvedWidths.artifacts ?? 300}
-                  minWidth={200}
-                  onWidthChange={(w) => updatePanelSizes({ artifacts: w })}
-                  onDragStart={() => setIsResizing(true)}
-                  onDragEnd={() => setIsResizing(false)}
-                  onReset={resetAllPanels}
-                  style={panelOrderStyle('artifacts')}
-                />
-              )}
+            {!compact && panelVisibility.artifacts && renderResizeHandle('artifacts')}
 
             {/* Artifacts Panel */}
             {!compact && panelVisibility.artifacts && (
@@ -3435,20 +3457,9 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
             {!compact &&
               enabledWebPanels.map((wp) => {
                 if (!panelVisibility[wp.id]) return null
-                const hasLeftNeighbor = getFirstVisibleTaskPanelId() !== wp.id
                 return (
                   <div key={wp.id} className="contents">
-                    {hasLeftNeighbor && (
-                      <ResizeHandle
-                        width={resolvedWidths[wp.id] ?? 200}
-                        minWidth={200}
-                        onWidthChange={(w) => updatePanelSizes({ [wp.id]: w })}
-                        onDragStart={() => setIsResizing(true)}
-                        onDragEnd={() => setIsResizing(false)}
-                        onReset={resetAllPanels}
-                        style={panelOrderStyle(wp.id)}
-                      />
-                    )}
+                    {renderResizeHandle(wp.id)}
                     <div
                       data-panel-id={wp.id}
                       className={cn(
@@ -3489,17 +3500,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
               })}
 
             {/* Resize handle before Diff */}
-            {!compact && panelVisibility.diff && getFirstVisibleTaskPanelId() !== 'diff' && (
-              <ResizeHandle
-                width={resolvedWidths.diff ?? 50}
-                minWidth={50}
-                onWidthChange={(w) => updatePanelSizes({ diff: w })}
-                onDragStart={() => setIsResizing(true)}
-                onDragEnd={() => setIsResizing(false)}
-                onReset={resetAllPanels}
-                style={panelOrderStyle('diff')}
-              />
-            )}
+            {!compact && panelVisibility.diff && renderResizeHandle('diff')}
 
             {/* Git Panel */}
             {!compact && panelVisibility.diff && (
@@ -3551,19 +3552,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
             )}
 
             {/* Resize handle before Settings */}
-            {!compact &&
-              panelVisibility.settings &&
-              getFirstVisibleTaskPanelId() !== 'settings' && (
-                <ResizeHandle
-                  width={resolvedWidths.settings ?? 440}
-                  minWidth={200}
-                  onWidthChange={(w) => updatePanelSizes({ settings: w })}
-                  onDragStart={() => setIsResizing(true)}
-                  onDragEnd={() => setIsResizing(false)}
-                  onReset={resetAllPanels}
-                  style={panelOrderStyle('settings')}
-                />
-              )}
+            {!compact && panelVisibility.settings && renderResizeHandle('settings')}
 
             {/* Settings Panel */}
             {!compact && panelVisibility.settings && (
@@ -3590,35 +3579,53 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                   <TaskSettingsPanel
                     taskId={task.id}
                     renderDefaultContent={() => {
-                      // Open cards: content-sized up to fair share of available space.
-                      // Closed cards: header only (auto).
-                      // Units in rem so values track Tailwind scale directly:
-                      //   gap-4 = 1rem, min-h-8 (card header) = 2rem.
-                      // Share = (container − closed×header − total-gap) / openCount
+                      // Two layouts, picked by the Description "Full height" (↕) toggle:
+                      //
+                      // Full height (descriptionExpanded): Description fills all spare
+                      //   space (minmax(9rem,1fr)); Sub-tasks/Artifacts are auxiliary —
+                      //   header-only when closed, capped at 18rem (internal scroll)
+                      //   when open.
+                      //
+                      // Default height: open cards share remaining space evenly.
+                      //   Share = (container − closed×header − total-gap) / openCount,
+                      //   floored at 9rem so a short panel can't starve the grid down
+                      //   to header-only — it scrolls instead. Units in rem to track
+                      //   Tailwind scale: gap-4 = 1rem, min-h-8 (card header) = 2rem.
                       const openCount = [descriptionOpen, subTasksOpen, artifactsOpen].filter(
                         Boolean
                       ).length
                       const closedCount = 3 - openCount
                       const share =
                         openCount > 0
-                          ? `calc((100% - ${closedCount * 2}rem - 2rem) / ${openCount})`
+                          ? `max(9rem, calc((100% - ${closedCount * 2}rem - 2rem) / ${openCount}))`
                           : '100%'
                       const rowFor = (open: boolean): string =>
                         open ? `fit-content(${share})` : 'auto'
-                      const cardRows = [
-                        rowFor(descriptionOpen),
-                        rowFor(subTasksOpen),
-                        rowFor(artifactsOpen)
-                      ].join(' ')
+                      const cappedRowFor = (open: boolean): string =>
+                        open ? 'fit-content(18rem)' : 'auto'
+                      const cardRows = descriptionExpanded
+                        ? [
+                            descriptionOpen ? 'minmax(9rem, 1fr)' : 'auto',
+                            cappedRowFor(subTasksOpen),
+                            cappedRowFor(artifactsOpen)
+                          ].join(' ')
+                        : [
+                            rowFor(descriptionOpen),
+                            rowFor(subTasksOpen),
+                            rowFor(artifactsOpen)
+                          ].join(' ')
                       return (
                         <>
                           {/* External sync links */}
                           <ExternalSyncCard taskId={task.id} onUpdate={handleTaskUpdate} />
 
-                          {/* Cards grid: open cards share remaining space (1fr), closed cards collapse to header (auto) */}
+                          {/* Cards grid: open cards share remaining space, closed cards
+                              collapse to header. flex-[1_0_auto] = grow into spare space
+                              but never shrink below content, so floored rows push the
+                              panel into its overflow-y-auto scroll instead of clipping. */}
                           <div
                             data-testid="settings-cards-grid"
-                            className="flex-1 min-h-0 grid gap-4 content-start"
+                            className="flex-[1_0_auto] grid gap-4 content-start"
                             style={{ gridTemplateRows: cardRows }}
                           >
                             {/* Description */}
@@ -3634,7 +3641,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                                   descriptionOpen && 'border-b border-border'
                                 )}
                               >
-                                <CollapsibleTrigger className="flex items-center gap-1.5 hover:text-foreground transition-colors [&[data-state=open]>svg:first-child]:rotate-90">
+                                <CollapsibleTrigger className="flex flex-1 items-center gap-1.5 hover:text-foreground transition-colors [&[data-state=open]>svg:first-child]:rotate-90">
                                   <ChevronRight className="size-3 transition-transform" />
                                   Description
                                 </CollapsibleTrigger>
@@ -3733,11 +3740,9 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                               onOpenChange={setSubTasksOpen}
                               className="group/sub rounded-md border border-border overflow-hidden flex flex-col min-h-0"
                             >
-                              <div className="shrink-0 flex w-full items-center gap-1.5 bg-muted/50 px-2.5 py-1.5 min-h-8 text-xs font-medium text-muted-foreground group-data-[state=open]/sub:border-b border-border">
-                                <CollapsibleTrigger className="flex items-center gap-1.5 hover:text-foreground transition-colors [&[data-state=open]>svg:first-child]:rotate-90">
-                                  <ChevronRight className="size-3 transition-transform" />
-                                  Sub-tasks
-                                </CollapsibleTrigger>
+                              <CollapsibleTrigger className="shrink-0 flex w-full items-center gap-1.5 bg-muted/50 px-2.5 py-1.5 min-h-8 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors group-data-[state=open]/sub:border-b border-border [&[data-state=open]>svg:first-child]:rotate-90">
+                                <ChevronRight className="size-3 transition-transform" />
+                                Sub-tasks
                                 {subTasks.length > 0 && (
                                   <span className="ml-auto text-muted-foreground/60 text-[10px]">
                                     {
@@ -3748,7 +3753,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                                     /{subTasks.length}
                                   </span>
                                 )}
-                              </div>
+                              </CollapsibleTrigger>
                               <CollapsibleContent className="p-2 flex flex-col flex-1 min-h-0">
                                 <DndContext
                                   sensors={subTaskSensors}
@@ -3815,17 +3820,15 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                               onOpenChange={setArtifactsOpen}
                               className="group/artifacts rounded-md border border-border overflow-hidden flex flex-col min-h-0"
                             >
-                              <div className="flex w-full items-center gap-1.5 bg-muted/50 px-2.5 py-1.5 min-h-8 text-xs font-medium text-muted-foreground group-data-[state=open]/artifacts:border-b border-border">
-                                <CollapsibleTrigger className="flex items-center gap-1.5 hover:text-foreground transition-colors [&[data-state=open]>svg:first-child]:rotate-90">
-                                  <ChevronRight className="size-3 transition-transform" />
-                                  Artifacts
-                                </CollapsibleTrigger>
+                              <CollapsibleTrigger className="flex w-full items-center gap-1.5 bg-muted/50 px-2.5 py-1.5 min-h-8 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors group-data-[state=open]/artifacts:border-b border-border [&[data-state=open]>svg:first-child]:rotate-90">
+                                <ChevronRight className="size-3 transition-transform" />
+                                Artifacts
                                 {artifacts.length > 0 && (
                                   <span className="ml-auto text-muted-foreground/60 text-[10px]">
                                     {artifacts.length}
                                   </span>
                                 )}
-                              </div>
+                              </CollapsibleTrigger>
                               <CollapsibleContent className="p-2 flex flex-col flex-1 min-h-0">
                                 <div className="flex flex-col gap-0.5 flex-1 min-h-0 overflow-y-auto overscroll-contain">
                                   {artifacts.map((artifact) => (
@@ -4021,19 +4024,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
             )}
 
             {/* Resize handle before Processes */}
-            {!compact &&
-              panelVisibility.processes &&
-              getFirstVisibleTaskPanelId() !== 'processes' && (
-                <ResizeHandle
-                  width={resolvedWidths.processes ?? 300}
-                  minWidth={200}
-                  onWidthChange={(w) => updatePanelSizes({ processes: w })}
-                  onDragStart={() => setIsResizing(true)}
-                  onDragEnd={() => setIsResizing(false)}
-                  onReset={resetAllPanels}
-                  style={panelOrderStyle('processes')}
-                />
-              )}
+            {!compact && panelVisibility.processes && renderResizeHandle('processes')}
 
             {/* Processes Panel */}
             {!compact && panelVisibility.processes && (

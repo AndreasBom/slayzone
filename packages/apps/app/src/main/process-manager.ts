@@ -5,7 +5,8 @@ import type { BrowserWindow } from 'electron'
 import type { Database } from 'better-sqlite3'
 import { createStatsPoller } from './pid-stats'
 import { extractOscTitle } from '@slayzone/terminal/shared'
-import { resolveUserShell, getEnrichedPath } from '@slayzone/terminal/main'
+import { getEnrichedPath } from '@slayzone/terminal/main'
+import { buildShellInvocation } from '@slayzone/platform'
 
 export type ProcessStatus = 'running' | 'stopped' | 'completed' | 'error'
 
@@ -34,6 +35,21 @@ interface ManagedProcess extends ProcessInfo {
 }
 
 const LOG_BUFFER_MAX = 500
+const DEFAULT_SHUTDOWN_TERM_GRACE_MS = 1500
+const DEFAULT_SHUTDOWN_HARD_TIMEOUT_MS = 5000
+
+export interface ProcessShutdownOptions {
+  termGraceMs?: number
+  hardTimeoutMs?: number
+}
+
+export interface ProcessShutdownResult {
+  total: number
+  exited: number
+  killed: number
+  timedOut: number
+  errors: Array<{ id: string; phase: string; message: string }>
+}
 
 /** Kill the entire process tree rooted at `child` (must be spawned with `detached: true` on POSIX). */
 function killProcessTree(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): void {
@@ -42,16 +58,21 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'
   if (process.platform === 'win32') {
     try {
       execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)])
-    } catch {}
+    } catch {
+      // ignore
+    }
   } else {
     try {
       process.kill(-pid, signal)
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 }
 
 let win: BrowserWindow | null = null
 let db: Database | null = null
+let isShuttingDown = false
 const processes = new Map<string, ManagedProcess>()
 const logSubscribers = new Map<string, Set<(line: string) => void>>()
 
@@ -168,20 +189,17 @@ function handleProcessData(proc: ManagedProcess, data: Buffer): void {
 }
 
 function doSpawn(proc: ManagedProcess): void {
+  if (isShuttingDown) return
   proc.spawnedAt = new Date().toISOString()
   startStatsPolling()
-  const shell = resolveUserShell()
-  const isFish = shell.endsWith('/fish')
   const isWin = process.platform === 'win32'
-  // fish needs -i (interactive) for PATH init inside `if status is-interactive` blocks
-  // bash/zsh only need -l (login) to source profile — -i without a TTY causes side effects
-  const shellArgs = isWin
-    ? ['/c', proc.command]
-    : [...(isFish ? ['-i', '-l'] : ['-l']), '-c', proc.command]
+  // buildShellInvocation handles fish (-i -l for PATH init inside
+  // `if status is-interactive` blocks), bash/zsh (-l only), and Windows (cmd /c).
+  const { file, args } = buildShellInvocation(proc.command)
   const env: Record<string, string | undefined> = { ...process.env }
   const enrichedPath = getEnrichedPath()
   if (enrichedPath) env.PATH = enrichedPath
-  const child = spawn(shell, shellArgs, { cwd: proc.cwd, env, detached: !isWin })
+  const child = spawn(file, args, { cwd: proc.cwd, env, detached: !isWin })
 
   proc.child = child
   proc.pid = child.pid ?? null
@@ -207,6 +225,7 @@ function doSpawn(proc: ManagedProcess): void {
       pushLog(proc, `[exited with code ${code ?? '?'}, restarting in 1s...]`)
       setStatus(proc, 'running')
       setTimeout(() => {
+        if (isShuttingDown) return
         if (processes.has(proc.id)) doSpawn(proc)
       }, 1000)
     } else {
@@ -259,6 +278,7 @@ export function spawnProcess(
   cwd: string,
   autoRestart: boolean
 ): string {
+  if (isShuttingDown) throw new Error('Cannot spawn process while app is shutting down.')
   const id = randomUUID()
   const proc: ManagedProcess = {
     id,
@@ -341,6 +361,7 @@ export function killProcess(id: string): boolean {
 }
 
 export function restartProcess(id: string): boolean {
+  if (isShuttingDown) return false
   const proc = processes.get(id)
   if (!proc) return false
   stopTitlePolling(proc)
@@ -402,4 +423,100 @@ export function killAllProcesses(): void {
     proc.child = null
   }
   processes.clear()
+}
+
+function toErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function shutdownManagedProcess(
+  proc: ManagedProcess,
+  opts: Required<ProcessShutdownOptions>
+): Promise<{
+  id: string
+  exited: boolean
+  killed: boolean
+  timedOut: boolean
+  errors: ProcessShutdownResult['errors']
+}> {
+  return new Promise((resolve) => {
+    const child = proc.child
+    const id = proc.id
+    const errors: ProcessShutdownResult['errors'] = []
+    if (!child) {
+      resolve({ id, exited: true, killed: false, timedOut: false, errors })
+      return
+    }
+
+    let settled = false
+    let killed = false
+    let termTimer: ReturnType<typeof setTimeout> | null = null
+    let hardTimer: ReturnType<typeof setTimeout> | null = null
+
+    const recordError = (phase: string, err: unknown): void => {
+      errors.push({ id, phase, message: toErrorMessage(err) })
+    }
+    const cleanup = (): void => {
+      if (termTimer) clearTimeout(termTimer)
+      if (hardTimer) clearTimeout(hardTimer)
+      child.off('exit', onExit)
+    }
+    const settle = (timedOut: boolean): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (timedOut) {
+        stopTitlePolling(proc)
+        proc.child = null
+        proc.pid = null
+        proc.spawnedAt = null
+      }
+      resolve({ id, exited: !timedOut, killed, timedOut, errors })
+    }
+    const onExit = (): void => settle(false)
+
+    proc.autoRestart = false
+    stopTitlePolling(proc)
+    child.once('exit', onExit)
+
+    try {
+      killProcessTree(child, 'SIGTERM')
+    } catch (err) {
+      recordError('sigterm', err)
+    }
+
+    termTimer = setTimeout(() => {
+      killed = true
+      try {
+        killProcessTree(child, 'SIGKILL')
+      } catch (err) {
+        recordError('sigkill', err)
+      }
+    }, opts.termGraceMs)
+    termTimer.unref?.()
+
+    hardTimer = setTimeout(() => settle(true), opts.hardTimeoutMs)
+    hardTimer.unref?.()
+  })
+}
+
+export async function shutdownAllProcesses(
+  options: ProcessShutdownOptions = {}
+): Promise<ProcessShutdownResult> {
+  isShuttingDown = true
+  statsPoller.stop()
+  const opts: Required<ProcessShutdownOptions> = {
+    termGraceMs: options.termGraceMs ?? DEFAULT_SHUTDOWN_TERM_GRACE_MS,
+    hardTimeoutMs: options.hardTimeoutMs ?? DEFAULT_SHUTDOWN_HARD_TIMEOUT_MS
+  }
+  const targets = Array.from(processes.values())
+  const results = await Promise.all(targets.map((proc) => shutdownManagedProcess(proc, opts)))
+  processes.clear()
+  return {
+    total: results.length,
+    exited: results.filter((r) => r.exited).length,
+    killed: results.filter((r) => r.killed).length,
+    timedOut: results.filter((r) => r.timedOut).length,
+    errors: results.flatMap((r) => r.errors)
+  }
 }

@@ -3,6 +3,8 @@ export {
   getSlayzoneHomeDir,
   getClaudeSettingsPath,
   getGeminiSettingsPath,
+  getCodexHooksPath,
+  getAntigravityHooksPath,
   getOpencodePluginPath
 } from './dirs'
 export { ensureDataRoot, getTrpcPort, getServerPort, getServerHost } from './paths'
@@ -21,7 +23,19 @@ export {
   getManualInstallHint,
   type CliInstallResult
 } from './cli-install'
-export { DB_PRAGMAS } from './db'
+export { DB_PRAGMAS, getDbName, type SlayzoneDb } from './db'
+export {
+  setShellOverride,
+  getShellOverride,
+  shellExists,
+  defaultShellForPlatform,
+  resolveUserShell,
+  getDefaultShell,
+  getShellStartupArgs,
+  quoteForShell,
+  buildExecCommand,
+  buildShellInvocation
+} from './shell'
 // Re-export so main-process code can pull URL helpers from the main barrel.
 // Renderer code MUST import from '@slayzone/platform/slz-file-url' to avoid
 // pulling node:fs into the browser bundle.
@@ -29,7 +43,8 @@ export {
   SLZ_FILE_HOST,
   SLZ_FILE_PREFIX,
   toSlzFileUrl,
-  fileUrlToSlzFileUrl
+  fileUrlToSlzFileUrl,
+  slzFileUrlToFileUrl
 } from './slz-file-url'
 export {
   withResultDedup,

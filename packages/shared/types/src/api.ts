@@ -77,6 +77,10 @@ export interface ChatSessionInfo {
   chatModel?: 'sonnet' | 'opus' | 'haiku' | null
   /** Resolved reasoning effort this session was spawned with. `null` = inherit. */
   chatEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
+  /** Resolved collaboration mode this session was spawned with (Codex). `null` = provider default. */
+  chatCollaboration?: 'default' | 'plan' | null
+  /** Whether Codex Fast Mode was enabled for this session's spawn. */
+  chatFastMode?: boolean
 }
 import type {
   TerminalTab,
@@ -395,6 +399,8 @@ export interface ElectronAPI {
     archiveTasks: (ids: string[]) => Promise<void>
     unarchiveTask: (id: string) => Promise<Task>
     reorderTasks: (taskIds: string[]) => Promise<void>
+    /** Set the complete ordered list of pinned tasks (`pinned` + `pin_order`). */
+    reorderPinnedTasks: (taskIds: string[]) => Promise<void>
     /** Dedicated write path for per-tab lock flag — bypasses updateTask which strips `locked` to prevent stale writeback clobber. */
     setBrowserTabLocked: (taskId: string, tabId: string, locked: boolean) => Promise<boolean>
   }
@@ -583,6 +589,15 @@ export interface ElectronAPI {
     }>
     getVersion: () => Promise<string>
     getTrpcPort: () => Promise<number>
+    getSidecarStatus: () => Promise<{
+      health: 'starting' | 'ready' | 'restarting' | 'failed'
+      port: number | null
+      pid: number | null
+      restarts: number
+      dbPath: string | null
+      uptimeMs: number | null
+    }>
+    revealSidecarLog: () => Promise<void>
     isTestsPanelEnabled: () => Promise<boolean>
     isTestsPanelEnabledSync: boolean
     isJiraIntegrationEnabled: () => Promise<boolean>
@@ -910,6 +925,24 @@ export interface ElectronAPI {
       mode: string
       cwd: string
       chatEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+    }) => Promise<ChatSessionInfo>
+    /** Codex collaboration mode (`plan`/`default`). `null` for non-Codex modes. */
+    getCollaboration: (taskId: string, mode: string) => Promise<'default' | 'plan' | null>
+    setCollaboration: (opts: {
+      tabId: string
+      taskId: string
+      mode: string
+      cwd: string
+      chatCollaboration: 'default' | 'plan'
+    }) => Promise<ChatSessionInfo>
+    /** Codex Fast Mode toggle. `false` for non-Codex modes. */
+    getFastMode: (taskId: string, mode: string) => Promise<boolean>
+    setFastMode: (opts: {
+      tabId: string
+      taskId: string
+      mode: string
+      cwd: string
+      chatFastMode: boolean
     }) => Promise<ChatSessionInfo>
     /**
      * Detect whether `--permission-mode auto` is usable. Reads `~/.claude.json` +

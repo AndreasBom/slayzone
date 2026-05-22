@@ -18,6 +18,7 @@ import { ClaudeAdapter } from './claude-adapter'
 import { CodexAdapter } from './codex-adapter'
 import { CursorAdapter } from './cursor-adapter'
 import { GeminiAdapter } from './gemini-adapter'
+import { AntigravityAdapter } from './antigravity-adapter'
 import { OpencodeAdapter } from './opencode-adapter'
 import { QwenAdapter } from './qwen-adapter'
 import { CopilotAdapter } from './copilot-adapter'
@@ -29,6 +30,7 @@ const BUILTIN_ADAPTERS: Record<string, new () => TerminalAdapter> = {
   codex: CodexAdapter,
   'cursor-agent': CursorAdapter,
   gemini: GeminiAdapter,
+  antigravity: AntigravityAdapter,
   opencode: OpencodeAdapter,
   'qwen-code': QwenAdapter,
   copilot: CopilotAdapter,

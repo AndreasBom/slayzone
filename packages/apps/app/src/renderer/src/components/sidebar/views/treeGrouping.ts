@@ -17,11 +17,17 @@ export interface TreeGroup {
 }
 
 /**
- * Tree-local sort. ALWAYS tiebreaks by `order` col so manual drag-reorder
- * persists under any orderBy. Independent of kanban's `sortTasks` so kanban
- * tiebreaker semantics stay untouched.
+ * Tree-local sort. Tiebreaks by `tiebreakKey` so manual drag-reorder persists
+ * under any orderBy — `order` for normal groups, `pin_order` for the pinned
+ * group (whose manual order is task-intrinsic). Independent of kanban's
+ * `sortTasks` so kanban tiebreaker semantics stay untouched.
  */
-export function orderTreeRows(tasks: Task[], orderBy: TreeOrderBy, dir: TreeOrderDir): Task[] {
+export function orderTreeRows(
+  tasks: Task[],
+  orderBy: TreeOrderBy,
+  dir: TreeOrderDir,
+  tiebreakKey: 'order' | 'pin_order' = 'order'
+): Task[] {
   const sorted = [...tasks].sort((a, b) => {
     let cmp = 0
     switch (orderBy) {
@@ -57,7 +63,7 @@ export function orderTreeRows(tasks: Task[], orderBy: TreeOrderBy, dir: TreeOrde
         cmp = 0
     }
     if (cmp !== 0) return cmp
-    return a.order - b.order
+    return a[tiebreakKey] - b[tiebreakKey]
   })
   return dir === 'desc' ? sorted.reverse() : sorted
 }
@@ -101,8 +107,13 @@ export function groupTreeRows(
   if (pinnedTasks.length > 0) {
     groups.push({ key: PINNED_GROUP_KEY, isTemp: false, isPinned: true, tasks: pinnedTasks })
   }
-  if (tempTasks.length > 0) {
-    groups.push({ key: TEMP_GROUP_KEY, isTemp: true, isPinned: false, tasks: tempTasks })
+
+  // Temporary group renders last — append right before each return path.
+  const appendTemp = (): TreeGroup[] => {
+    if (tempTasks.length > 0) {
+      groups.push({ key: TEMP_GROUP_KEY, isTemp: true, isPinned: false, tasks: tempTasks })
+    }
+    return groups
   }
 
   if (groupBy === 'none') {
@@ -117,7 +128,7 @@ export function groupTreeRows(
         tasks: persistent
       })
     }
-    return groups
+    return appendTemp()
   }
 
   if (groupBy === 'status') {
@@ -155,7 +166,7 @@ export function groupTreeRows(
         groups.push({ key: k, isTemp: false, isPinned: false, tasks: arr })
       }
     }
-    return groups
+    return appendTemp()
   }
 
   // groupBy === 'priority'
@@ -174,5 +185,5 @@ export function groupTreeRows(
     if (!opts.showEmpty && arr.length === 0) continue
     groups.push({ key: `p${p}`, isTemp: false, isPinned: false, tasks: arr })
   }
-  return groups
+  return appendTemp()
 }

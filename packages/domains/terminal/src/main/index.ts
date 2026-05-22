@@ -2,6 +2,7 @@ export { registerPtyHandlers } from './handlers'
 export { registerUsageHandlers } from './usage'
 export {
   killAllPtys,
+  shutdownAllPtys,
   killPty,
   killPtysByTaskId,
   onTaskReachedTerminal,
@@ -27,6 +28,8 @@ export {
   requestEnsureAlive,
   type EnsureAliveResult,
   PTY_EXIT_KILLED_BY_HOST,
+  type PtyShutdownOptions,
+  type PtyShutdownResult,
   setSpawnedTabRecorder as setPtySpawnedTabRecorder,
   setRemoteHookInstaller,
   findSessionByTaskIdAndMode,
@@ -38,6 +41,7 @@ export { syncTerminalModes } from './startup-sync'
 export {
   registerChatHandlers,
   shutdownChatTransports,
+  killAllChatTransports,
   inspectPermissionFlags,
   backfillChatModes,
   chatModeToFlags,

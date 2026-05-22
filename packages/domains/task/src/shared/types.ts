@@ -564,6 +564,15 @@ export interface UpdateArtifactFolderInput {
   parentId?: string | null
 }
 
+// Per-task commit-graph display config (was settings 'commit_graph:task:<id>').
+// `baseBranch` is computed at runtime from git state and never persisted here.
+export interface TaskCommitGraphConfig {
+  collapsed?: boolean
+  showBranches?: boolean
+  breakOnTags?: boolean
+  breakOnMerges?: boolean
+}
+
 export interface Task {
   id: string
   project_id: string
@@ -638,8 +647,12 @@ export interface Task {
   repo_name: string | null
   // External link (populated via JOIN)
   linear_url: string | null
-  // Set when an agent PTY for this task transitioned running → idle|error and the
-  // user has not yet focused the task. Cleared when the task tab gains focus.
+  // Unread flag — drives the amber "Unread" dot/badge. Set automatically when an
+  // agent PTY transitions running → idle|error before the user has opened the task,
+  // OR manually via the task context menu ("Mark as unread", available while the
+  // agent is idle). Cleared when the user navigates into the task (makes it the
+  // active tab) — NOT while it merely stays active, so a manual "Mark as unread"
+  // persists until the next open.
   needs_attention: boolean
   // True once user dismisses the dev-server URL toast for this task — toast never
   // reappears for the task again.
@@ -647,6 +660,14 @@ export interface Task {
   // Epoch ms of last user→agent or agent→user interaction. Bumped from
   // chat-event user-messages and agent_turns inserts; null until first event.
   last_interaction_at: number | null
+  // Tree-view: task pinned to top of the sidebar tree (was viewState.treePinnedTaskIds)
+  pinned: boolean
+  // Tree-view: ordering among pinned tasks, ascending (was treePinnedTaskIds array index)
+  pin_order: number
+  // Tree-view: sub-tasks collapsed/hidden in the sidebar (was viewState.treeCollapsedTaskIds)
+  tree_collapsed: boolean
+  // Per-task commit-graph display config JSON (was settings 'commit_graph:task:<id>')
+  commit_graph_config: TaskCommitGraphConfig | null
   created_at: string
   updated_at: string
 }
@@ -751,4 +772,12 @@ export interface UpdateTaskInput {
   needsAttention?: boolean
   // Persisted dismissal of the dev-server URL detected toast (per task)
   devUrlToastDismissed?: boolean
+  // Tree-view: pinned to top of sidebar tree
+  pinned?: boolean
+  // Tree-view: ordering among pinned tasks
+  pinOrder?: number
+  // Tree-view: sub-tasks collapsed in sidebar
+  treeCollapsed?: boolean
+  // Per-task commit-graph display config (null clears it)
+  commitGraphConfig?: TaskCommitGraphConfig | null
 }

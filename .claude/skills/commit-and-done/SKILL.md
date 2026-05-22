@@ -20,7 +20,7 @@ If the commit fails, is cancelled by the user, or there is nothing to commit, **
 
 Only after a successful commit:
 
-Run: `slay tasks done --close --dev`
+Run: `slay tasks done --close`
 
 This marks the task as done using the project's configured "done" status and closes the task tab in the SlayZone app.
 

@@ -11,8 +11,12 @@ export {
   type AgentLifecycleEventType
 } from './agent-event-handler'
 export * from './chat-mode'
+export * from './chat-mode-catalog'
 export * from './chat-model'
+export * from './chat-model-catalog'
 export * from './chat-effort'
+export * from './chat-collaboration'
+export * from './chat-fast-mode'
 export * from './key-sequences'
 export * from './ansi'
 export * from './link-regex'

@@ -80,15 +80,25 @@ async function setup() {
 }
 
 /**
- * Test helper that mirrors the legacy `createChat` API: hydrate the session
- * synchronously, then ensureSpawned. The production code paths invoke these
- * two steps separately (`chat:hydrate` IPC + lazy spawn on `chat:send`); this
- * helper keeps existing tests focused on the spawn-pipeline behavior they
- * were originally written to exercise without duplicating wiring per test.
+ * Test helper: hydrate the session, ensureSpawned, then fire the `spawn` event
+ * the way a real `child_process` would. `spawn` is what triggers
+ * `driver.start(ctx)` — without it the per-spawn session driver has no context
+ * and `sendUserMessage` / control requests / event parsing all silently no-op.
+ *
+ * Pass `{ autoSpawn: false }` for tests that drive the `spawn` event themselves
+ * (handshake-timing tests) or that must observe the pre-spawn `starting` state.
  */
-async function createChat(opts: Parameters<typeof mgr.hydrateSession>[0]) {
+async function createChat(
+  opts: Parameters<typeof mgr.hydrateSession>[0],
+  { autoSpawn = true }: { autoSpawn?: boolean } = {}
+) {
   mgr.hydrateSession(opts)
-  return mgr.ensureSpawned(opts.tabId)
+  const info = await mgr.ensureSpawned(opts.tabId)
+  if (autoSpawn) {
+    const child = mgr.__getSessionChildForTests(opts.tabId)
+    if (child) (child as unknown as EventEmitter).emit('spawn')
+  }
+  return info
 }
 
 console.log('\nChatTransportManager tests\n')
@@ -125,7 +135,7 @@ await test('createChat: missing binary → throws ChatTransportError', async () 
     await createChat({
       tabId: 't2',
       taskId: 'task-test',
-      mode: 'claude-code',
+      mode: 'claude-chat',
       cwd: '/tmp',
       conversationId: null,
       providerFlags: []
@@ -151,7 +161,7 @@ await test('createChat: pipes fixture NDJSON → emits typed events + ring buffe
   await createChat({
     tabId: 'tab-x',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -183,7 +193,7 @@ await test('getEventBufferSince: returns only events with seq > afterSeq', async
   await createChat({
     tabId: 'tab-y',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -209,7 +219,7 @@ await test('persist callback fires on turn-init', async () => {
   await createChat({
     tabId: 'tab-z',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: [],
@@ -233,7 +243,7 @@ await test('sendUserMessage: writes NDJSON line to stdin', async () => {
   await createChat({
     tabId: 'tab-msg',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -258,7 +268,7 @@ await test('sendToolResult: writes NDJSON tool_result envelope keyed by tool_use
   await createChat({
     tabId: 'tab-tr',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -296,7 +306,7 @@ await test('sendControlRequest: writes envelope + resolves on matching control_r
   await createChat({
     tabId: 'tab-ctrl',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -339,7 +349,7 @@ await test('sendControlRequest: rejects on error subtype', async () => {
   await createChat({
     tabId: 'tab-ctrl-err',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -378,7 +388,7 @@ await test('respondToPermissionRequest: writes control_response success on stdin
   await createChat({
     tabId: 'tab-perm',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -449,7 +459,7 @@ await test('invalid --resume: onInvalidResume fires + auto-retry with fresh sess
   await createChat({
     tabId: 'tab-resume',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: 'stale-session-id',
     providerFlags: [],
@@ -506,14 +516,17 @@ await test('invalid --resume: failed spawn events never broadcast or persist', a
     broadcastStateChange: () => {},
     persistEvent: (tabId, _seq, event) => persistedEvents.push({ tabId, kind: event.kind })
   })
-  await createChat({
-    tabId: 'tab-stage',
-    taskId: 'task-stage',
-    mode: 'claude-code',
-    cwd: '/tmp',
-    conversationId: 'stale-uuid',
-    providerFlags: []
-  })
+  await createChat(
+    {
+      tabId: 'tab-stage',
+      taskId: 'task-stage',
+      mode: 'claude-chat',
+      cwd: '/tmp',
+      conversationId: 'stale-uuid',
+      providerFlags: []
+    },
+    { autoSpawn: false } // fires `spawn` explicitly to test the staging window
+  )
 
   const first = fakes[0]
   // Synthetic spawn event so session-spawn enters tentative window first.
@@ -559,14 +572,17 @@ await test('valid --resume: first healthy event flushes staged events in order',
     broadcastExit: () => {},
     broadcastStateChange: () => {}
   })
-  await createChat({
-    tabId: 'tab-resume-ok',
-    taskId: 'task-resume-ok',
-    mode: 'claude-code',
-    cwd: '/tmp',
-    conversationId: 'good-uuid',
-    providerFlags: []
-  })
+  await createChat(
+    {
+      tabId: 'tab-resume-ok',
+      taskId: 'task-resume-ok',
+      mode: 'claude-chat',
+      cwd: '/tmp',
+      conversationId: 'good-uuid',
+      providerFlags: []
+    },
+    { autoSpawn: false } // fires `spawn` explicitly to test staged-flush order
+  )
 
   // Synthetic spawn event → would normally broadcast immediately, but we're in
   // the tentative window so it stages.
@@ -628,7 +644,7 @@ await test('exit event: fires process-exit + chat:exit broadcast', async () => {
   await createChat({
     tabId: 'tab-exit',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -653,7 +669,7 @@ await test('exit event: chat:exit broadcast carries dying session sessionId', as
   const info = await createChat({
     tabId: 'tab-exit-sid',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: 'sid-known',
     providerFlags: []
@@ -687,7 +703,7 @@ await test('reset race: old session exit fires after removeSession — broadcast
   await createChat({
     tabId: 'tab-reset',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -700,7 +716,7 @@ await test('reset race: old session exit fires after removeSession — broadcast
   await createChat({
     tabId: 'tab-reset',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -735,7 +751,7 @@ await test('reset race: live session exit (not stale) still broadcasts', async (
   await createChat({
     tabId: 'tab-live',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -772,7 +788,7 @@ await test('createChat: same tabId with different (taskId,cwd) → tears down zo
   await createChat({
     tabId: 'shared-tab',
     taskId: 'taskA',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/a',
     conversationId: null,
     providerFlags: []
@@ -783,7 +799,7 @@ await test('createChat: same tabId with different (taskId,cwd) → tears down zo
   await createChat({
     tabId: 'shared-tab',
     taskId: 'taskB',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/b',
     conversationId: null,
     providerFlags: []
@@ -814,7 +830,7 @@ await test('createChat: same tabId AND same identity → returns existing sessio
   await createChat({
     tabId: 'idem-tab',
     taskId: 'taskA',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/a',
     conversationId: null,
     providerFlags: []
@@ -822,7 +838,7 @@ await test('createChat: same tabId AND same identity → returns existing sessio
   await createChat({
     tabId: 'idem-tab',
     taskId: 'taskA',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/a',
     conversationId: null,
     providerFlags: []
@@ -846,7 +862,7 @@ await test('onStateChange: fires alongside broadcastStateChange so global listen
   await createChat({
     tabId: 'tab-state',
     taskId: 'task-state',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -891,7 +907,7 @@ await test('createChat: initialBuffer with unfinished turn → emits synthetic i
   await createChat({
     tabId: 'tab-restore-mid',
     taskId: 'task-restore',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: 'old-session',
     providerFlags: [],
@@ -955,7 +971,7 @@ await test('createChat: initialBuffer with completed turn → no synthetic inter
   await createChat({
     tabId: 'tab-restore-clean',
     taskId: 'task-restore',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: 'old-session',
     providerFlags: [],
@@ -978,7 +994,7 @@ await test('permission-request ExitPlanMode → auto-deny on stdin, no broadcast
   await createChat({
     tabId: 'tab-exitplan',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -1022,7 +1038,7 @@ await test('permission-request AskUserQuestion → broadcast, no auto-deny', asy
   await createChat({
     tabId: 'tab-ask',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -1060,22 +1076,14 @@ await test('permission-request → flips terminal state to idle + sets awaitingU
   await createChat({
     tabId: 'tab-ask-state',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
   })
-  // turn-init lifts state → running
-  fake._stdout.write(
-    JSON.stringify({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'sess-1',
-      model: 'claude',
-      cwd: '/tmp',
-      tools: []
-    }) + '\n'
-  )
+  // A user message opens the turn → running. (`turn-init` is session
+  // metadata, not a turn-open signal — see commitEvent.)
+  mgr.sendUserMessage('tab-ask-state', 'hi')
   await new Promise((r) => setImmediate(r))
   expect(mgr.getSessionTerminalState('tab-ask-state')).toBe('running')
 
@@ -1121,7 +1129,7 @@ await test('awaitingUserInput stays true across stderr / non-progress events', a
   await createChat({
     tabId: 'tab-ask-noclear',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -1161,7 +1169,7 @@ await test('drainChatQueue skips when awaitingUserInput is true (mid AskUserQues
   await createChat({
     tabId: 'tab-ask-drain',
     taskId: 'task-test',
-    mode: 'claude-code',
+    mode: 'claude-chat',
     cwd: '/tmp',
     conversationId: null,
     providerFlags: []
@@ -1203,7 +1211,7 @@ await test('spawnedSetter: fires (true) on spawn-success with tabId', async () =
     await createChat({
       tabId: 'tab-warm-1',
       taskId: 'task-warm',
-      mode: 'claude-code',
+      mode: 'claude-chat',
       cwd: '/tmp',
       conversationId: null,
       providerFlags: []
@@ -1232,7 +1240,7 @@ await test('spawnedSetter: fires (false) on natural subprocess exit', async () =
     await createChat({
       tabId: 'tab-warm-2',
       taskId: 'task-warm',
-      mode: 'claude-code',
+      mode: 'claude-chat',
       cwd: '/tmp',
       conversationId: null,
       providerFlags: []
@@ -1264,7 +1272,7 @@ await test('spawnedSetter: shutdown gate preserves was_spawned on exit', async (
     await createChat({
       tabId: 'tab-warm-3',
       taskId: 'task-warm',
-      mode: 'claude-code',
+      mode: 'claude-chat',
       cwd: '/tmp',
       conversationId: null,
       providerFlags: []
@@ -1284,6 +1292,337 @@ await test('spawnedSetter: shutdown gate preserves was_spawned on exit', async (
     mgr.setShuttingDown(false)
     mgr.setSpawnedTabRecorder(null)
   }
+})
+
+await test('shutdownAll: waits for chat exits and preserves warm flags', async () => {
+  await setup()
+  const fake = makeFakeChild()
+  const kills: string[] = []
+  fake.kill = (sig?: string) => {
+    kills.push(sig ?? '')
+    setImmediate(() => fake.emit('exit', null, sig ?? null))
+    return true
+  }
+  const recorder: Array<{ tabId: string; v: boolean }> = []
+  mgr.setSpawnedTabRecorder((tabId, v) => recorder.push({ tabId, v }))
+  mgr.setTransportDepsForTests({
+    whichBinary: async () => '/fake/claude',
+    spawn: () => fake as unknown as ChildProcess,
+    broadcastEvent: () => {},
+    broadcastExit: () => {},
+    broadcastStateChange: () => {}
+  })
+  try {
+    await createChat({
+      tabId: 'tab-shutdown',
+      taskId: 'task-shutdown',
+      mode: 'claude-chat',
+      cwd: '/tmp',
+      conversationId: null,
+      providerFlags: []
+    })
+    mgr.setShuttingDown(true)
+    const result = await mgr.shutdownAll({ termGraceMs: 50, hardTimeoutMs: 200 })
+    expect(result.total).toBe(1)
+    expect(result.exited).toBe(1)
+    expect(result.timedOut).toBe(0)
+    expect(kills[0]).toBe('SIGTERM')
+    expect(recorder.filter((r) => r.v === false).length).toBe(0)
+  } finally {
+    mgr.setShuttingDown(false)
+    mgr.setSpawnedTabRecorder(null)
+  }
+})
+
+await test('shutdownAll: escalates stuck chat process and resolves', async () => {
+  await setup()
+  const fake = makeFakeChild()
+  const kills: string[] = []
+  fake.kill = (sig?: string) => {
+    kills.push(sig ?? '')
+    return true
+  }
+  mgr.setTransportDepsForTests({
+    whichBinary: async () => '/fake/claude',
+    spawn: () => fake as unknown as ChildProcess,
+    broadcastEvent: () => {},
+    broadcastExit: () => {},
+    broadcastStateChange: () => {}
+  })
+  await createChat({
+    tabId: 'tab-stuck',
+    taskId: 'task-shutdown',
+    mode: 'claude-chat',
+    cwd: '/tmp',
+    conversationId: null,
+    providerFlags: []
+  })
+  mgr.setShuttingDown(true)
+  try {
+    const result = await mgr.shutdownAll({ termGraceMs: 5, hardTimeoutMs: 25 })
+    expect(result.total).toBe(1)
+    expect(result.timedOut).toBe(1)
+    expect(kills.includes('SIGTERM')).toBe(true)
+    expect(kills.includes('SIGKILL')).toBe(true)
+  } finally {
+    mgr.setShuttingDown(false)
+  }
+})
+
+await test('codex-chat: a fatal driver-start failure kills the subprocess + goes dead', async () => {
+  await setup()
+  const stateChanges: string[] = []
+  const fakes: Array<ReturnType<typeof makeFakeChild>> = []
+  const killed: string[] = []
+  mgr.setTransportDepsForTests({
+    whichBinary: async () => '/fake/codex',
+    spawn: () => {
+      const f = makeFakeChild()
+      // Record kill calls — the fatal-failure path must tear the process down.
+      f.kill = ((sig?: string) => {
+        killed.push(sig ?? 'SIGTERM')
+        return true
+      }) as ChildProcess['kill']
+      fakes.push(f)
+      return f as unknown as ChildProcess
+    },
+    broadcastEvent: () => {},
+    broadcastExit: () => {},
+    broadcastStateChange: (_tabId, state) => stateChanges.push(state)
+  })
+  await createChat(
+    {
+      tabId: 'tab-codex-fatal',
+      taskId: 'task-codex',
+      mode: 'codex-chat',
+      cwd: '/tmp',
+      conversationId: null,
+      providerFlags: []
+    },
+    { autoSpawn: false } // this test fires `spawn` explicitly
+  )
+  const child = fakes[0]
+  // Subprocess is alive — the driver runs its initialize handshake.
+  ;(child as unknown as EventEmitter).emit('spawn')
+  await new Promise((r) => setTimeout(r, 50))
+  // initialize (JSON-RPC id 1) fails — an unrecoverable handshake failure.
+  child._stdout.write(
+    JSON.stringify({ id: 1, error: { code: -32000, message: 'app-server down' } }) + '\n'
+  )
+  await new Promise((r) => setTimeout(r, 120))
+  expect(killed.length > 0).toBe(true)
+  // The kill drives the existing exit path → terminal `dead` state.
+  ;(child as unknown as EventEmitter).emit('exit', 1, null)
+  await new Promise((r) => setTimeout(r, 50))
+  expect(stateChanges.includes('dead')).toBe(true)
+})
+
+await test('codex-chat: handshake with no user message rests at `idle`, not `running`', async () => {
+  // Regression: the driver emits a synthetic `turn-init` at handshake to seed
+  // the timeline. That event is session metadata — it must NOT flip the state
+  // machine to `running`, or a freshly spawned / resumed codex-chat session
+  // shows a perpetual spinner until the first message is sent.
+  await setup()
+  const stateChanges: string[] = []
+  const fakes: Array<ReturnType<typeof makeFakeChild>> = []
+  mgr.setTransportDepsForTests({
+    whichBinary: async () => '/fake/codex',
+    spawn: () => {
+      const f = makeFakeChild()
+      fakes.push(f)
+      return f as unknown as ChildProcess
+    },
+    broadcastEvent: () => {},
+    broadcastExit: () => {},
+    broadcastStateChange: (_tabId, state) => stateChanges.push(state)
+  })
+  await createChat(
+    {
+      tabId: 'tab-codex-idle',
+      taskId: 'task-codex',
+      mode: 'codex-chat',
+      cwd: '/tmp',
+      conversationId: null,
+      providerFlags: []
+    },
+    { autoSpawn: false }
+  )
+  const child = fakes[0]
+  ;(child as unknown as EventEmitter).emit('spawn') // starting → idle
+  await new Promise((r) => setTimeout(r, 40))
+  // Complete the handshake — initialize + thread/start both succeed. The
+  // driver emits its synthetic `turn-init`; no user message follows.
+  child._stdout.write(JSON.stringify({ id: 1, result: { userAgent: 'x', codexHome: '/h' } }) + '\n')
+  await new Promise((r) => setTimeout(r, 30))
+  child._stdout.write(
+    JSON.stringify({ id: 2, result: { thread: { id: 't' }, model: 'gpt', cwd: '/tmp' } }) + '\n'
+  )
+  await new Promise((r) => setTimeout(r, 50))
+  expect(mgr.getSessionTerminalState('tab-codex-idle')).toBe('idle')
+  expect(stateChanges.includes('running')).toBe(false)
+})
+
+// --- liveness watchdog ---
+
+/**
+ * Stand up a codex-chat session with a fake child, recording kill signals,
+ * state changes and exit broadcasts. Tiny watchdog bounds + an injected
+ * liveness probe keep the suite fast and deterministic.
+ */
+async function watchdogHarness(opts: { alive?: boolean } = {}) {
+  await setup()
+  const stateChanges: ChatTerminalState[] = []
+  const killed: string[] = []
+  let exits = 0
+  const fakes: Array<ReturnType<typeof makeFakeChild>> = []
+  let alive = opts.alive ?? false
+  mgr.setTransportDepsForTests({
+    whichBinary: async () => '/fake/codex',
+    spawn: () => {
+      const f = makeFakeChild()
+      f.kill = ((sig?: string) => {
+        killed.push(sig ?? 'SIGTERM')
+        return true
+      }) as ChildProcess['kill']
+      fakes.push(f)
+      return f as unknown as ChildProcess
+    },
+    broadcastEvent: () => {},
+    broadcastExit: () => {
+      exits++
+    },
+    broadcastStateChange: (_id, state) => stateChanges.push(state),
+    isProcessAlive: () => alive,
+    watchdogTimings: { startingBoundMs: 40, runningStallMs: 80, killGraceMs: 40 }
+  })
+  await createChat(
+    {
+      tabId: 'tab-wd',
+      taskId: 'task-wd',
+      mode: 'codex-chat',
+      cwd: '/tmp',
+      conversationId: null,
+      providerFlags: []
+    },
+    { autoSpawn: false } // watchdog tests drive `spawn` themselves
+  )
+  return {
+    child: fakes[0],
+    stateChanges,
+    killed,
+    getExits: () => exits,
+    setAlive: (v: boolean) => {
+      alive = v
+    }
+  }
+}
+
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Drive a fresh codex-chat child through spawn + handshake, then send a user
+ * message so a real turn opens → `running`. The handshake alone leaves the
+ * session `idle` (its synthetic `turn-init` is session metadata, not a
+ * turn-open signal); a `user-message` is what flips it to `running`.
+ */
+async function driveCodexToRunning(child: ReturnType<typeof makeFakeChild>): Promise<void> {
+  ;(child as unknown as EventEmitter).emit('spawn')
+  await wait(30)
+  child._stdout.write(JSON.stringify({ id: 1, result: { userAgent: 'x', codexHome: '/h' } }) + '\n')
+  await wait(30)
+  child._stdout.write(
+    JSON.stringify({ id: 2, result: { thread: { id: 't' }, model: 'gpt', cwd: '/tmp' } }) + '\n'
+  )
+  await wait(40)
+  mgr.sendUserMessage('tab-wd', 'go')
+  await wait(20)
+}
+
+await test('watchdog: stuck `starting`, process dead → reaps to `dead`', async () => {
+  const h = await watchdogHarness({ alive: false })
+  // Never emit 'spawn' — the session is stuck in `starting`.
+  await wait(160)
+  expect(h.stateChanges.includes('dead')).toBe(true)
+})
+
+await test('watchdog: stuck `starting`, process alive → SIGTERM → SIGKILL → `dead`', async () => {
+  const h = await watchdogHarness({ alive: true })
+  await wait(150) // two kill-grace ticks
+  expect(h.killed.includes('SIGTERM')).toBe(true)
+  expect(h.killed.includes('SIGKILL')).toBe(true)
+  h.setAlive(false) // process finally gone
+  await wait(100)
+  expect(h.stateChanges.includes('dead')).toBe(true)
+})
+
+await test('watchdog: stalled `running` turn → `dead`', async () => {
+  const h = await watchdogHarness({ alive: false })
+  await driveCodexToRunning(h.child)
+  expect(h.stateChanges.includes('running')).toBe(true)
+  await wait(200) // silence past runningStallMs
+  expect(h.stateChanges.includes('dead')).toBe(true)
+})
+
+await test('watchdog: a `running` turn with steady progress is NOT killed', async () => {
+  const h = await watchdogHarness({ alive: false })
+  await driveCodexToRunning(h.child)
+  // Stream a delta every 30ms (< 80ms stall bound) for ~240ms.
+  for (let i = 0; i < 8; i++) {
+    h.child._stdout.write(
+      JSON.stringify({
+        method: 'item/agentMessage/delta',
+        params: { threadId: 't', turnId: 'tn', itemId: 'a1', delta: 'x' }
+      }) + '\n'
+    )
+    await wait(30)
+  }
+  expect(h.stateChanges.includes('dead')).toBe(false) // never false-killed
+  // Now go silent — the watchdog should catch the real stall.
+  await wait(200)
+  expect(h.stateChanges.includes('dead')).toBe(true)
+})
+
+await test('watchdog: missed-exit reap emits exactly one exit (idempotent)', async () => {
+  const h = await watchdogHarness({ alive: false })
+  await driveCodexToRunning(h.child)
+  await wait(200) // watchdog reaps via a synthesized exit
+  expect(h.getExits()).toBe(1)
+  // A late real `exit` must not double-broadcast.
+  ;(h.child as unknown as EventEmitter).emit('exit', 1, null)
+  await wait(20)
+  expect(h.getExits()).toBe(1)
+})
+
+await test('watchdog: a session resting in `idle` is never killed', async () => {
+  const h = await watchdogHarness({ alive: false })
+  ;(h.child as unknown as EventEmitter).emit('spawn') // starting → idle
+  await wait(200) // well past every bound
+  expect(h.stateChanges.includes('dead')).toBe(false)
+  expect(h.stateChanges[h.stateChanges.length - 1]).toBe('idle')
+})
+
+await test('watchdog: __resetForTests cancels a pending timer', async () => {
+  const h = await watchdogHarness({ alive: false })
+  // Session is in `starting` with the watchdog armed; reset before it fires.
+  mgr.__resetForTests()
+  await wait(160)
+  expect(h.getExits()).toBe(0)
+})
+
+await test('watchdog: fatal handshake failure escalates to SIGKILL', async () => {
+  const h = await watchdogHarness({ alive: true })
+  ;(h.child as unknown as EventEmitter).emit('spawn')
+  await wait(30)
+  // initialize fails → driver emits a fatal error → transport kills + arms.
+  h.child._stdout.write(
+    JSON.stringify({ id: 1, error: { code: -32000, message: 'app-server down' } }) + '\n'
+  )
+  await wait(120) // fatal SIGTERM, then a watchdog kill-grace tick
+  expect(h.killed.includes('SIGTERM')).toBe(true)
+  expect(h.killed.includes('SIGKILL')).toBe(true)
+  h.setAlive(false)
+  await wait(100)
+  expect(h.stateChanges.includes('dead')).toBe(true)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

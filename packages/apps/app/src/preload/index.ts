@@ -74,6 +74,7 @@ const api: ElectronAPI = {
     archiveTasks: (ids) => ipcRenderer.invoke('db:tasks:archiveMany', ids),
     unarchiveTask: (id) => ipcRenderer.invoke('db:tasks:unarchive', id),
     reorderTasks: (taskIds) => ipcRenderer.invoke('db:tasks:reorder', taskIds),
+    reorderPinnedTasks: (taskIds) => ipcRenderer.invoke('db:tasks:reorderPinned', taskIds),
     setBrowserTabLocked: (taskId, tabId, locked) =>
       ipcRenderer.invoke('db:tasks:setBrowserTabLocked', taskId, tabId, locked)
   },
@@ -231,6 +232,8 @@ const api: ElectronAPI = {
     getProtocolClientStatus: () => ipcRenderer.invoke('app:get-protocol-client-status'),
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
     getTrpcPort: () => ipcRenderer.invoke('app:get-trpc-port') as Promise<number>,
+    getSidecarStatus: () => ipcRenderer.invoke('app:get-sidecar-status'),
+    revealSidecarLog: () => ipcRenderer.invoke('app:reveal-sidecar-log'),
     isTestsPanelEnabled: () => ipcRenderer.invoke('app:is-tests-panel-enabled'),
     isTestsPanelEnabledSync: ipcRenderer.sendSync('app:is-tests-panel-enabled-sync') as boolean,
     isJiraIntegrationEnabled: () => ipcRenderer.invoke('app:is-jira-integration-enabled'),
@@ -683,7 +686,9 @@ const api: ElectronAPI = {
       taskId: string
       mode: string
       cwd: string
-      chatMode: 'plan' | 'auto-accept' | 'auto' | 'bypass'
+      // Provider-specific runtime/permission mode id. Main-side handler
+      // validates against the mode's catalog.
+      chatMode: string
     }) => ipcRenderer.invoke('chat:setMode', opts),
     getModel: (taskId: string, mode: string) => ipcRenderer.invoke('chat:getModel', taskId, mode),
     setModel: (opts: {
@@ -691,7 +696,9 @@ const api: ElectronAPI = {
       taskId: string
       mode: string
       cwd: string
-      chatModel: 'sonnet' | 'opus' | 'haiku'
+      // Provider-specific model id — Claude alias or Codex model id. The
+      // main-side handler validates against the mode's catalog.
+      chatModel: string
     }) => ipcRenderer.invoke('chat:setModel', opts),
     getEffort: (taskId: string, mode: string) => ipcRenderer.invoke('chat:getEffort', taskId, mode),
     setEffort: (opts: {
@@ -701,6 +708,26 @@ const api: ElectronAPI = {
       cwd: string
       chatEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
     }) => ipcRenderer.invoke('chat:setEffort', opts),
+    getCollaboration: (taskId: string, mode: string) =>
+      ipcRenderer.invoke('chat:getCollaboration', taskId, mode),
+    setCollaboration: (opts: {
+      tabId: string
+      taskId: string
+      mode: string
+      cwd: string
+      // Codex collaboration mode — `plan` or `default`.
+      chatCollaboration: 'default' | 'plan'
+    }) => ipcRenderer.invoke('chat:setCollaboration', opts),
+    getFastMode: (taskId: string, mode: string) =>
+      ipcRenderer.invoke('chat:getFastMode', taskId, mode),
+    setFastMode: (opts: {
+      tabId: string
+      taskId: string
+      mode: string
+      cwd: string
+      // Codex Fast Mode toggle.
+      chatFastMode: boolean
+    }) => ipcRenderer.invoke('chat:setFastMode', opts),
     getAutoEligibility: () => ipcRenderer.invoke('chat:getAutoEligibility'),
     list: () => ipcRenderer.invoke('chat:list'),
     listSkills: (cwd: string) => ipcRenderer.invoke('chat:listSkills', cwd),

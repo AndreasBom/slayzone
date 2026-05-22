@@ -15,15 +15,24 @@ import { ChatSearchBar } from './ChatSearchBar'
 import { useChatMode } from './useChatMode'
 import { useChatModel } from './useChatModel'
 import { useChatEffort } from './useChatEffort'
+import { useChatCollaboration } from './useChatCollaboration'
+import { useChatFastMode } from './useChatFastMode'
 import { useChatQueue } from './useChatQueue'
 import { useChatSearch } from './useChatSearch'
-import { modelSupportsEffort } from '@slayzone/terminal/shared'
+import {
+  chatModesForMode,
+  modelsForMode,
+  modelSupportsEffortForMode,
+  modeSupportsCollaboration,
+  modeSupportsFastMode
+} from '@slayzone/terminal/shared'
 import {
   cn,
   toast,
   AgentModePill,
   AgentModelPill,
   AgentEffortPill,
+  AgentCollaborationPill,
   nextAgentMode,
   ContextMenu,
   ContextMenuTrigger,
@@ -147,6 +156,19 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(
       cwd
     })
     const { chatEffort, effortChanging, handleEffortChange } = useChatEffort({
+      taskId,
+      mode,
+      tabId,
+      cwd
+    })
+    const { chatCollaboration, collaborationChanging, handleCollaborationChange } =
+      useChatCollaboration({
+        taskId,
+        mode,
+        tabId,
+        cwd
+      })
+    const { chatFastMode, fastModeChanging, handleFastModeChange } = useChatFastMode({
       taskId,
       mode,
       tabId,
@@ -676,7 +698,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(
           if (autocomplete.show) return
           e.preventDefault()
           if (inFlight) return
-          const next = nextAgentMode(chatMode, autoCapability.optedIn)
+          const next = nextAgentMode(chatMode, autoCapability.optedIn, chatModesForMode(mode))
           handleModeChange(next).catch(() => {
             /* toast already shown by hook */
           })
@@ -1239,6 +1261,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(
                   <>
                     <AgentModePill
                       mode={chatMode}
+                      modes={chatModesForMode(mode)}
                       onChange={(next) => {
                         handleModeChange(next).catch(() => {
                           /* toast already shown by hook */
@@ -1252,21 +1275,37 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(
                     {chatModel && (
                       <AgentModelPill
                         model={chatModel}
+                        models={modelsForMode(mode)}
                         onChange={(next) => {
                           void handleModelChange(next)
                         }}
                         disabled={modelChanging || inFlight}
-                        compact
                         variant="text"
                       />
                     )}
-                    {chatModel && modelSupportsEffort(chatModel) && (
+                    {chatModel && modelSupportsEffortForMode(mode, chatModel) && (
                       <AgentEffortPill
                         effort={chatEffort}
                         onChange={(next) => {
                           void handleEffortChange(next)
                         }}
-                        disabled={effortChanging || inFlight}
+                        disabled={effortChanging || fastModeChanging || inFlight}
+                        compact
+                        variant="text"
+                        showFastMode={modeSupportsFastMode(mode)}
+                        fastMode={chatFastMode}
+                        onFastModeChange={(next) => {
+                          void handleFastModeChange(next)
+                        }}
+                      />
+                    )}
+                    {modeSupportsCollaboration(mode) && (
+                      <AgentCollaborationPill
+                        collaboration={chatCollaboration}
+                        onChange={(next) => {
+                          void handleCollaborationChange(next)
+                        }}
+                        disabled={collaborationChanging || inFlight}
                         compact
                         variant="text"
                       />
