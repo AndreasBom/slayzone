@@ -15,11 +15,31 @@ import net from 'node:net'
  * the main bundle); only spawned by file path.
  */
 
+/** Production timing defaults. Overridable via `SidecarServerOpts.timing`. */
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 16000] as const
 const HEALTHY_RESET_MS = 60_000
 const HEALTH_POLL_INTERVAL_MS = 250
 const HEALTH_BOOT_TIMEOUT_MS = 10_000
 const STOP_SIGTERM_GRACE_MS = 3_000
+
+/**
+ * Timing overrides. Every field is optional and falls back to the production
+ * constant above — omitting `timing` entirely keeps production behaviour
+ * byte-identical. Exists purely so crash-recovery tests can shrink the backoff
+ * schedule + the 60s healthy-reset window to run fast and deterministically.
+ */
+export type SidecarTiming = {
+  /** Backoff schedule (ms per retry). Length = max restart attempts. */
+  backoffMs?: readonly number[]
+  /** Continuous-healthy duration that resets the backoff attempt counter. */
+  healthyResetMs?: number
+  /** Interval between `/health` probes while waiting for a child to boot. */
+  healthPollIntervalMs?: number
+  /** Time a freshly-spawned child has to answer `/health` before it is killed. */
+  healthBootTimeoutMs?: number
+  /** Grace period after SIGTERM before `stop()` escalates to SIGKILL. */
+  stopSigtermGraceMs?: number
+}
 
 export type SidecarServerOpts = {
   /** process.execPath — the Electron binary. */
@@ -34,6 +54,8 @@ export type SidecarServerOpts = {
   logger: (line: string) => void
   onReady: (info: { pid: number; port: number }) => void
   onPermanentFailure: (info: { attempts: number; lastError: unknown }) => void
+  /** Optional timing overrides (tests only — production omits this). */
+  timing?: SidecarTiming
 }
 
 export type SidecarHealth = 'starting' | 'ready' | 'restarting' | 'failed'
@@ -91,6 +113,13 @@ function probeHealth(host: string, port: number): Promise<boolean> {
 }
 
 export function startSidecarServer(opts: SidecarServerOpts): SidecarServerHandle {
+  // Resolve timing — each field falls back to its production default.
+  const backoffMs = opts.timing?.backoffMs ?? BACKOFF_MS
+  const healthyResetMs = opts.timing?.healthyResetMs ?? HEALTHY_RESET_MS
+  const healthPollIntervalMs = opts.timing?.healthPollIntervalMs ?? HEALTH_POLL_INTERVAL_MS
+  const healthBootTimeoutMs = opts.timing?.healthBootTimeoutMs ?? HEALTH_BOOT_TIMEOUT_MS
+  const stopSigtermGraceMs = opts.timing?.stopSigtermGraceMs ?? STOP_SIGTERM_GRACE_MS
+
   let child: ChildProcess | null = null
   let port: number | null = null
   let health: SidecarHealth = 'starting'
@@ -120,17 +149,17 @@ export function startSidecarServer(opts: SidecarServerOpts): SidecarServerHandle
 
   const scheduleRestart = (lastError: unknown): void => {
     if (stopped) return
-    if (attempt >= BACKOFF_MS.length) {
+    if (attempt >= backoffMs.length) {
       health = 'failed'
       opts.logger(`[supervisor] giving up after ${attempt} attempts`)
       opts.onPermanentFailure({ attempts: attempt, lastError })
       rejectWaiters(new Error('sidecar permanent failure'))
       return
     }
-    const delay = BACKOFF_MS[attempt]
+    const delay = backoffMs[attempt]
     attempt += 1
     health = 'restarting'
-    opts.logger(`[supervisor] restart in ${delay}ms (attempt ${attempt}/${BACKOFF_MS.length})`)
+    opts.logger(`[supervisor] restart in ${delay}ms (attempt ${attempt}/${backoffMs.length})`)
     backoffTimer = setTimeout(spawnChild, delay)
   }
 
@@ -147,7 +176,7 @@ export function startSidecarServer(opts: SidecarServerOpts): SidecarServerHandle
         // 60s healthy streak resets the backoff counter.
         healthyTimer = setTimeout(() => {
           attempt = 0
-        }, HEALTHY_RESET_MS)
+        }, healthyResetMs)
         return
       }
       if (Date.now() > bootDeadline) {
@@ -155,7 +184,7 @@ export function startSidecarServer(opts: SidecarServerOpts): SidecarServerHandle
         child?.kill('SIGKILL')
         return
       }
-      pollTimer = setTimeout(pollHealth, HEALTH_POLL_INTERVAL_MS)
+      pollTimer = setTimeout(pollHealth, healthPollIntervalMs)
     })
   }
 
@@ -165,7 +194,7 @@ export function startSidecarServer(opts: SidecarServerOpts): SidecarServerHandle
       .then((freePort) => {
         if (stopped) return
         port = freePort
-        bootDeadline = Date.now() + HEALTH_BOOT_TIMEOUT_MS
+        bootDeadline = Date.now() + healthBootTimeoutMs
 
         // stdin is 'pipe' so the child detects parent death via stdin close.
         const proc = spawn(opts.execPath, [opts.scriptPath], {
@@ -218,7 +247,7 @@ export function startSidecarServer(opts: SidecarServerOpts): SidecarServerHandle
           }
         })
 
-        pollTimer = setTimeout(pollHealth, HEALTH_POLL_INTERVAL_MS)
+        pollTimer = setTimeout(pollHealth, healthPollIntervalMs)
       })
       .catch((err) => {
         opts.logger(`[supervisor] port probe failed: ${String(err)}`)
@@ -255,7 +284,7 @@ export function startSidecarServer(opts: SidecarServerOpts): SidecarServerHandle
       await new Promise<void>((resolve) => {
         const killTimer = setTimeout(() => {
           proc.kill('SIGKILL')
-        }, STOP_SIGTERM_GRACE_MS)
+        }, stopSigtermGraceMs)
         proc.once('exit', () => {
           clearTimeout(killTimer)
           resolve()

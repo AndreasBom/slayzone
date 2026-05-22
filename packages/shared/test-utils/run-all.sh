@@ -75,6 +75,22 @@ run_test_electron_loader() {
   fi
 }
 
+# Strict: pipefail makes a non-zero test exit code propagate through the grep
+# filter, so a real failure counts as FAIL (the lenient runners above count
+# PASS as long as any output is produced).
+run_test_electron_strict() {
+  echo ""
+  echo "=== $1 (electron, strict) ==="
+  if ( set -o pipefail; ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron --import tsx/esm "$1" 2>&1 | grep -v 'npm warn\|Migration\|ExperimentalWarning\|--trace-warnings\|--import' ); then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# Side-car supervisor crash-recovery (slice 2.5.1 HARD GATE).
+run_test_electron_strict packages/apps/app/src/main/sidecar-server-supervisor.test.ts
+
 # Wave 5 — taskEvents bus + REST routes + MCP tools + CLI integration
 run_test_electron_loader packages/domains/task/src/main/events.test.ts
 run_test_electron_loader packages/apps/app/src/main/rest-api/tasks/archive.test.ts
