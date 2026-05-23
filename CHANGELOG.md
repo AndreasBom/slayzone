@@ -1,6 +1,18 @@
 # Changelog
 
 
+## v0.32.3
+
+[compare changes](https://github.com/debuglebowski/slayzone/compare/v0.32.2...v0.32.3)
+
+### 🩹 Fixes
+
+- **terminal:** Close remaining WebGL atlas scramble vectors ([552bb3b8](https://github.com/debuglebowski/slayzone/commit/552bb3b8))
+
+### ❤️ Contributors
+
+- Debuglebowski
+
 ## v0.32.2
 
 [compare changes](https://github.com/debuglebowski/slayzone/compare/v0.32.1...v0.32.2)

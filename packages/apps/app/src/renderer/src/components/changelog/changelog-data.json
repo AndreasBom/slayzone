@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.32.3",
+    "date": "2026-05-23",
+    "tagline": "Atlas cleanup",
+    "items": [
+      {
+        "category": "fix",
+        "title": "Terminal glyphs fully cleared after resize",
+        "description": "Cleaned up remaining WebGL atlas artefacts that could leave scrambled vectors after terminal resizes."
+      }
+    ]
+  },
+  {
     "version": "0.32.2",
     "date": "2026-05-22",
     "tagline": "Scramble-free terminals",
