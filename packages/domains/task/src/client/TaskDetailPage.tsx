@@ -2991,6 +2991,7 @@ export const TaskDetailPage = React.memo(function TaskDetailPage({
                           initialPrompt={getQuickRunPrompt(task.id)}
                           providerFlags={getProviderFlagsForMode(task)}
                           executionContext={project?.execution_context}
+                          projectId={task.project_id}
                           focusRequestId={terminalFocusRequestId}
                           onConversationCreated={handleSessionCreated}
                           onSessionInvalid={handleSessionInvalid}

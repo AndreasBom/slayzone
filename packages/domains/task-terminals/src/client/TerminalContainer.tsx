@@ -35,6 +35,9 @@ interface TerminalContainerProps {
   initialPrompt?: string | null
   providerFlags?: string
   executionContext?: import('@slayzone/terminal/shared').ExecutionContext | null
+  /** Project this container belongs to. Threaded into the Kill Remote
+   *  Session context menu item via tmux:killSession IPC. */
+  projectId?: string | null
   isActive?: boolean
   /** Owns keyboard shortcuts (Cmd+D, Cmd+T). Defaults to `isActive`. In explode mode, only the focused cell has this true. */
   hasShortcutFocus?: boolean
@@ -72,6 +75,7 @@ export const TerminalContainer = forwardRef<TerminalContainerHandle, TerminalCon
       initialPrompt,
       providerFlags,
       executionContext,
+      projectId,
       isActive = true,
       hasShortcutFocus,
       focusRequestId = 0,
@@ -377,6 +381,7 @@ export const TerminalContainer = forwardRef<TerminalContainerHandle, TerminalCon
           initialPrompt: tab.isMain ? initialPrompt : undefined,
           providerFlags: tab.isMain ? providerFlags : undefined,
           executionContext,
+          projectId,
           onConversationCreated: tab.isMain ? handleConversationCreated : undefined,
           onSessionInvalid: tab.isMain ? onSessionInvalid : undefined,
           onReady: tab.isMain ? handleTerminalReady : undefined,
@@ -412,6 +417,7 @@ export const TerminalContainer = forwardRef<TerminalContainerHandle, TerminalCon
       initialPrompt,
       providerFlags,
       executionContext,
+      projectId,
       handleConversationCreated,
       onSessionInvalid,
       handleTerminalReady,

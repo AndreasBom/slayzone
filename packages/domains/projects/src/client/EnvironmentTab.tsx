@@ -5,6 +5,7 @@ import { Label } from '@slayzone/ui'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@slayzone/ui'
 import { cn } from '@slayzone/ui'
 import type { Project } from '@slayzone/projects/shared'
+import { RemoteSessionsPanel } from './RemoteSessionsPanel'
 import { SettingsTabIntro } from './project-settings-shared'
 
 interface EnvironmentTabProps {
@@ -22,6 +23,21 @@ export function EnvironmentTab({ project, onUpdated, onClose }: EnvironmentTabPr
   const [testingConnection, setTestingConnection] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null)
   const [loading, setLoading] = useState(false)
+  const [ownInstanceId, setOwnInstanceId] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    window.api.instance
+      .getId()
+      .then((id) => {
+        if (!cancelled) setOwnInstanceId(id)
+      })
+      .catch(() => {
+        /* leave null */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     const ctx = project.execution_context
@@ -257,6 +273,11 @@ export function EnvironmentTab({ project, onUpdated, onClose }: EnvironmentTabPr
               they survive SSH disconnects and SlayZone restarts — reattach is automatic. Make
               sure <code className="font-mono">tmux</code> is installed there.
             </p>
+          </div>
+        )}
+        {project.execution_context?.type === 'ssh' && (
+          <div className="border-t border-border pt-4">
+            <RemoteSessionsPanel projectId={project.id} ownInstanceId={ownInstanceId} />
           </div>
         )}
         <div className="flex justify-end gap-2">

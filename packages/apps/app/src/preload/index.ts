@@ -231,6 +231,33 @@ const api: ElectronAPI = {
   instance: {
     getId: () => ipcRenderer.invoke('instance:getId') as Promise<string>
   },
+  tmux: {
+    listSessions: (projectId: string) =>
+      ipcRenderer.invoke('tmux:listSessions', projectId) as Promise<
+        Array<{
+          sessionName: string
+          taskId: string | null
+          tabId: string | null
+          instanceId: string | null
+          mode: string | null
+          attached: boolean
+          created: string | null
+          taskTitle: string | null
+          taskProjectId: string | null
+          legacy?: boolean
+        }>
+      >,
+    killSession: (projectId: string, sessionName: string, mode: string | null) =>
+      ipcRenderer.invoke('tmux:killSession', projectId, sessionName, mode) as Promise<{
+        ok: boolean
+        message?: string
+      }>,
+    killAllSessions: (projectId: string, scope: 'this-instance' | 'all') =>
+      ipcRenderer.invoke('tmux:killAllSessions', projectId, scope) as Promise<{
+        ok: number
+        failed: number
+      }>
+  },
   app: {
     getProtocolClientStatus: () => ipcRenderer.invoke('app:get-protocol-client-status'),
     getVersion: () => ipcRenderer.invoke('app:getVersion'),

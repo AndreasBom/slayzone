@@ -84,6 +84,38 @@ export function setupRemoteAgentHooks(opts: {
   return p
 }
 
+/**
+ * IPC bootstrap: guarantees the slz-tmux wrapper AND slayzone.conf are
+ * present on the remote before a Step 2 IPC (`tmux:listSessions`, etc.)
+ * invokes the wrapper. Without both, `tmux -L slayzone -f …` fatals on
+ * a missing config file and the panel shows "no sessions" even when
+ * sessions exist.
+ *
+ * Implementation: probes for both files; if either is missing, triggers
+ * the full `setupRemoteAgentHooks` (already idempotent + cached via
+ * installCache). Same cache => second IPC against the same target hits
+ * the cached Promise.
+ */
+export async function ensureRemoteWrapper(opts: {
+  sshExecutable: string
+  target: string
+}): Promise<void> {
+  // Fast path: cached install already completed for this target.
+  const key = `${opts.sshExecutable}::${opts.target}`
+  if (installCache.has(key)) return installCache.get(key)!
+
+  const probe = await runSsh(
+    opts.sshExecutable,
+    opts.target,
+    [],
+    '[ -x "$HOME/.slayzone/bin/slz-tmux" ] && [ -r "$HOME/.tmux/slayzone.conf" ] && echo OK || echo MISSING'
+  ).catch(() => 'MISSING')
+  if (probe.trim() === 'OK') return
+  // Run the full install — it's idempotent and the cache is keyed on
+  // (ssh, target) so subsequent spawn-driven invocations reuse this Promise.
+  await setupRemoteAgentHooks(opts)
+}
+
 async function doSetup(opts: { sshExecutable: string; target: string }): Promise<void> {
   const { sshExecutable, target } = opts
 

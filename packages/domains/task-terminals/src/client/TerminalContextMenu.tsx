@@ -25,7 +25,8 @@ import {
   RotateCw,
   ArrowDownToLine,
   Hash,
-  Power
+  Power,
+  ServerCog
 } from 'lucide-react'
 import type { TerminalHandle } from '@slayzone/terminal/client/Terminal'
 
@@ -40,6 +41,12 @@ interface TerminalContextMenuProps {
   onClose: (() => void) | null
   onRename: (() => void) | null
   onResetSession: (() => void) | null
+  /** ssh-only: project this terminal belongs to. Required for the
+   *  "Kill remote session" item (passed to tmux:killSession IPC). */
+  projectId?: string | null
+  /** ssh-only: true when this tab's project has execution_context.type === 'ssh'.
+   *  Gates the "Kill remote session" item from showing on host projects. */
+  isSshTarget?: boolean
 }
 
 const FONT_SIZE_MIN = 8
@@ -55,8 +62,31 @@ export function TerminalContextMenu({
   onNewGroup,
   onClose,
   onRename,
-  onResetSession
+  onResetSession,
+  projectId,
+  isSshTarget
 }: TerminalContextMenuProps) {
+  const handleKillRemote = useCallback(async () => {
+    if (!projectId || !isSshTarget) return
+    const sessionName = `slz-${sessionId.replace(/[:.]/g, '_')}`
+    if (
+      !window.confirm(
+        `Kill the remote tmux session for this tab? This destroys the running agent and clears the stored conversation id.`
+      )
+    ) {
+      return
+    }
+    try {
+      const result = await window.api.tmux.killSession(projectId, sessionName, mode)
+      if (!result.ok) {
+        // eslint-disable-next-line no-alert
+        window.alert(`Kill failed: ${result.message ?? 'unknown error'}`)
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-alert
+      window.alert(`Kill failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [isSshTarget, mode, projectId, sessionId])
   const [hasSelection, setHasSelection] = useState(false)
   const { terminalFontSize } = useAppearance()
 
@@ -218,6 +248,20 @@ export function TerminalContextMenu({
                 <ContextMenuItem variant="destructive" onSelect={onResetSession}>
                   <Power className="size-4" />
                   Reset Session
+                </ContextMenuItem>
+              </>
+            )}
+            {projectId && isSshTarget && (
+              <>
+                <ContextMenuSeparator />
+                <ContextMenuItem
+                  variant="destructive"
+                  onSelect={() => {
+                    void handleKillRemote()
+                  }}
+                >
+                  <ServerCog className="size-4" />
+                  Kill Remote Session
                 </ContextMenuItem>
               </>
             )}

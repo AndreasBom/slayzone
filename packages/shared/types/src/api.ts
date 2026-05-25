@@ -583,6 +583,31 @@ export interface ElectronAPI {
   instance: {
     getId: () => Promise<string>
   }
+  tmux: {
+    listSessions: (projectId: string) => Promise<
+      Array<{
+        sessionName: string
+        taskId: string | null
+        tabId: string | null
+        instanceId: string | null
+        mode: string | null
+        attached: boolean
+        created: string | null
+        taskTitle: string | null
+        taskProjectId: string | null
+        legacy?: boolean
+      }>
+    >
+    killSession: (
+      projectId: string,
+      sessionName: string,
+      mode: string | null
+    ) => Promise<{ ok: boolean; message?: string }>
+    killAllSessions: (
+      projectId: string,
+      scope: 'this-instance' | 'all'
+    ) => Promise<{ ok: number; failed: number }>
+  }
   app: {
     getProtocolClientStatus: () => Promise<{
       scheme: string

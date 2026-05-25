@@ -15,7 +15,7 @@ import { quoteForShell } from './shell-env'
  *
  * Override via `SLAYZONE_SSH_PATH` if you need a specific binary.
  */
-function resolveSshExecutable(): string {
+export function resolveSshExecutable(): string {
   const override = process.env.SLAYZONE_SSH_PATH
   if (override && existsSync(override)) return override
   if (platform() !== 'win32') return 'ssh'

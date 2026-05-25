@@ -17,6 +17,9 @@ interface PaneProps {
   initialPrompt?: string | null
   providerFlags?: string
   executionContext?: import('@slayzone/terminal/shared').ExecutionContext | null
+  /** Project this pane belongs to. Threaded into the Kill Remote Session
+   *  context menu item via tmux:killSession IPC. */
+  projectId?: string | null
   permissionNotice?: string | null
   onConversationCreated?: (conversationId: string) => void
   onSessionInvalid?: () => void
@@ -207,6 +210,8 @@ export const TerminalSplitGroup = forwardRef<TerminalSplitGroupHandle, TerminalS
           onClose={pane.onClose ?? null}
           onRename={pane.onRename ?? null}
           onResetSession={pane.onResetSession ?? null}
+          projectId={pane.projectId ?? null}
+          isSshTarget={pane.executionContext?.type === 'ssh'}
         >
           <div className="h-full">{terminal}</div>
         </TerminalContextMenu>

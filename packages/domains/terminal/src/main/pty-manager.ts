@@ -144,6 +144,9 @@ interface PtySession {
   // renderer reliably receives pty:exit + pty:state-change → 'dead'.
   finalizer?: (exitCode: number) => void
   shutdownWaiters?: Set<(exitCode: number) => void>
+  /** Set true on the first finalizeSessionExit call. Consumed by
+   *  waitForShutdown to short-circuit late waiters with `already-dead`. */
+  finalized?: boolean
   // One-shot trigger label + sample for the next emitted state change.
   // Consumed by emitStateChange so pty.state_change diagnostics include
   // *why* a transition fired (e.g. "detect:✻ Cogitating..." vs "silence-timer").
@@ -1063,6 +1066,11 @@ export async function createPty(
     const finalizeSessionExit = (exitCode: number): void => {
       if (finalized) return
       finalized = true
+      // Mirror onto the session object so waitForShutdown can short-circuit
+      // late-arriving waiters with `already-dead` even after the trailing
+      // 100ms cleanup has run.
+      const sessionForFinalize = sessions.get(sessionId)
+      if (sessionForFinalize) sessionForFinalize.finalized = true
       // Clear the warm flag — UNLESS we're in app shutdown, in which case
       // we deliberately preserve was_spawned so the next boot auto-restarts.
       if (!isShuttingDown) {
@@ -1901,6 +1909,59 @@ export function killPty(sessionId: string): boolean {
 
 export function hasPty(sessionId: string): boolean {
   return sessions.has(sessionId)
+}
+
+export type ShutdownReason = 'finalized' | 'already-dead' | 'timeout'
+
+/**
+ * Wait for a PTY session to finalize.
+ *
+ * Resolution paths (per REMOTE-SSH-RESILIENCE-PLAN.md v6 CC7):
+ *   1. Session not in `sessions` → resolve immediately with `already-dead`.
+ *   2. `finalized` flag already true → resolve immediately with `already-dead`
+ *      (finalize already ran; further waiters would never be drained).
+ *   3. Otherwise register a one-shot waiter on `shutdownWaiters` and resolve
+ *      with `finalized` when `finalizeSessionExit` drains it.
+ *   4. `timeoutMs` elapses → resolve with `timeout` and detach the waiter
+ *      (subsequent finalize call's drain finds no waiter, no-ops).
+ *
+ * `exitCode` is `null` on the `already-dead` and `timeout` paths because we
+ * have no reliable way to recover the original exit code after the session
+ * has been cleaned up.
+ */
+export function waitForShutdown(
+  sessionId: string,
+  timeoutMs: number
+): Promise<{ exitCode: number | null; reason: ShutdownReason }> {
+  const session = sessions.get(sessionId)
+  if (!session) {
+    return Promise.resolve({ exitCode: null, reason: 'already-dead' })
+  }
+  if (session.finalized) {
+    return Promise.resolve({ exitCode: null, reason: 'already-dead' })
+  }
+
+  return new Promise((resolve) => {
+    const waiters = session.shutdownWaiters ?? (session.shutdownWaiters = new Set())
+    let settled = false
+
+    const waiter = (exitCode: number): void => {
+      if (settled) return
+      settled = true
+      waiters.delete(waiter)
+      clearTimeout(timer)
+      resolve({ exitCode, reason: 'finalized' })
+    }
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      waiters.delete(waiter)
+      resolve({ exitCode: null, reason: 'timeout' })
+    }, timeoutMs)
+
+    waiters.add(waiter)
+  })
 }
 
 /** Find a live session by taskId + mode. Used by the agent-hook REST handler to

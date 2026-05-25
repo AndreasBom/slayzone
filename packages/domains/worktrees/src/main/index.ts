@@ -1,5 +1,6 @@
 export { registerWorktreeHandlers, resolveCopyBehavior } from './handlers'
 export { getGitWatcher, closeGitWatcher } from './git-watcher'
+export { resolveProjectExecutionContext } from './run-git'
 export {
   removeWorktree,
   createWorktree,

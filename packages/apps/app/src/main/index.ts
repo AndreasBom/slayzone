@@ -5,6 +5,7 @@
 // can't load.
 import { raiseFdLimit } from './raise-fd-limit'
 import { getSlayzoneInstanceId } from './instance-id'
+import { registerTmuxHandlers } from './tmux-handlers'
 const fdLimitResult = raiseFdLimit()
 console.log('[fd-limit]', JSON.stringify(fdLimitResult))
 
@@ -1555,6 +1556,7 @@ app
     }
 
     registerTerminalTabsHandlers(ipcMain, db)
+    registerTmuxHandlers(ipcMain, db)
     setPtyEnricher(createPtyEnricher(db))
     // Inject the remote agent-hook installer so pty-manager can deploy
     // notify.sh + ~/.claude/settings.json to a remote host before spawning an
