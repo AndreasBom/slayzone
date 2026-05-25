@@ -64,3 +64,5 @@ npmRebuild: true
 nativeRebuilder: sequential
 publish:
   provider: github
+  owner: AndreasBom
+  repo: slayzone

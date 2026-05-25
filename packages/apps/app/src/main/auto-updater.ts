@@ -62,8 +62,21 @@ function getAutoUpdater() {
 
 const CHECK_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
 
+/**
+ * Kill switch for fork builds. Setting SLAYZONE_DISABLE_UPDATER=1 at build or
+ * install time skips every updater hook so a fork's installation can't be
+ * silently overwritten by upstream's GitHub releases.
+ */
+function updaterDisabled(): boolean {
+  return process.env.SLAYZONE_DISABLE_UPDATER === '1'
+}
+
 export function initAutoUpdater(): void {
   if (is.dev) return
+  if (updaterDisabled()) {
+    console.log('[updater] disabled via SLAYZONE_DISABLE_UPDATER')
+    return
+  }
   try {
     getAutoUpdater().checkForUpdatesAndNotify()
   } catch (err) {
@@ -165,7 +178,7 @@ function sendUpdateStatus(status: import('@slayzone/types').UpdateStatus): void 
 export async function checkForUpdates(): Promise<void> {
   sendUpdateStatus({ type: 'checking' })
 
-  if (is.dev) {
+  if (is.dev || updaterDisabled()) {
     sendUpdateStatus({ type: 'not-available' })
     return
   }
