@@ -4,6 +4,7 @@
 // in shell-env.ts still protects terminal sessions if the native addon
 // can't load.
 import { raiseFdLimit } from './raise-fd-limit'
+import { getSlayzoneInstanceId } from './instance-id'
 const fdLimitResult = raiseFdLimit()
 console.log('[fd-limit]', JSON.stringify(fdLimitResult))
 
@@ -252,6 +253,7 @@ import {
   setPtySpawnedTabRecorder,
   setChatSpawnedTabRecorder,
   setRemoteHookInstaller,
+  setSlayzoneInstanceId,
   beginTerminalShutdown
 } from '@slayzone/terminal/main'
 import { setupRemoteAgentHooks } from './agent-hooks/remote-hook-installer'
@@ -1559,6 +1561,7 @@ app
     // ssh-backed agent (without dragging the agent-hooks domain into the
     // terminal package).
     setRemoteHookInstaller(setupRemoteAgentHooks)
+    setSlayzoneInstanceId(getSlayzoneInstanceId())
     // Wire the per-tab `was_spawned` flag so pty + chat spawn/exit handlers
     // can flip it without importing the task-terminals package (would cycle).
     // Composition root resolves the dependency direction.
@@ -2164,6 +2167,7 @@ div{text-align:center}h1{font-size:14px;font-weight:500;color:#aaa}p{font-size:1
 
     ipcMain.handle('app:getVersion', () => app.getVersion())
     ipcMain.handle('app:get-trpc-port', () => awaitTrpcPort())
+    ipcMain.handle('instance:getId', () => getSlayzoneInstanceId())
     // Read-only side-car (dark-launch) status for the Diagnostics settings tab.
     ipcMain.handle('app:get-sidecar-status', () => {
       return (

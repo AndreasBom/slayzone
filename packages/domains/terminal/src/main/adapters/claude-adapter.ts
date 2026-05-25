@@ -23,6 +23,7 @@ import { KITTY_SHIFT_ENTER, ENTER } from '@slayzone/terminal/shared'
  */
 export class ClaudeAdapter implements TerminalAdapter {
   readonly mode = 'claude-code' as const
+  readonly supportsResume = true
   // No silence-timer fallback. Hooks (Stop/Notification/SessionEnd) drive
   // running→idle; the interrupt marker in detectActivity covers the one
   // hook-less case (ESC mid-thinking). A time-based fallback only ever

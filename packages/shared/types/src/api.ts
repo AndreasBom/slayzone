@@ -580,6 +580,9 @@ export interface ElectronAPI {
       filters?: Array<{ name: string; extensions: string[] }>
     }) => Promise<{ canceled: boolean; filePaths: string[] }>
   }
+  instance: {
+    getId: () => Promise<string>
+  }
   app: {
     getProtocolClientStatus: () => Promise<{
       scheme: string

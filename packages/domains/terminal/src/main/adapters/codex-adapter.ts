@@ -26,6 +26,7 @@ import { whichBinary, validateShellEnv } from '../shell-env'
  */
 export class CodexAdapter implements TerminalAdapter {
   readonly mode = 'codex' as const
+  readonly supportsResume = true
   // No silence-timer fallback — mirrors ClaudeAdapter. Hooks drive every
   // running→idle transition; the approval-modal check in detectActivity
   // covers the lagging-hook case. A time-based fallback only misfired: a

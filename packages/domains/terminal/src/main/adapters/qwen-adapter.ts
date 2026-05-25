@@ -20,6 +20,7 @@ import { whichBinary, validateShellEnv } from '../shell-env'
 export class QwenAdapter implements TerminalAdapter {
   readonly mode = 'qwen-code' as const
   readonly idleTimeoutMs = null // default 60 s
+  readonly supportsResume = true
 
   encodeSubmit = defaultEncodeSubmit
 

@@ -822,13 +822,21 @@ export async function createPty(
     } as Record<string, string>
 
     // Check for docker/ssh transport wrapping
+    const tabId = sessionId.includes(':') ? sessionId.split(':').slice(1).join(':') : null
     const transport = buildTransportSpawn(
       executionContext,
       cwd || homedir(),
       baseEnv,
       spawnConfig.env ?? {},
       mcpEnv,
-      sessionId
+      sessionId,
+      undefined,
+      {
+        taskId,
+        tabId,
+        mode: terminalMode,
+        createdAtIso: new Date(createStartedAt).toISOString()
+      }
     )
 
     recordDiagnosticEvent({

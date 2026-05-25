@@ -77,6 +77,13 @@ export interface TerminalAdapter {
   /** Startup timeout in ms before PTY is killed (null/undefined = use default 10s) */
   readonly startupTimeoutMs?: number | null
 
+  /** True if this adapter's CLI supports resuming an earlier conversation by id
+   *  (e.g. `claude --resume <id>`, `codex resume <id>`). Drives the resume-
+   *  template selection and the SessionEnd auto-clear path. Adapters that
+   *  don't support resume skip the SessionEnd clearing and the SESSION_NOT_FOUND
+   *  fallback. */
+  readonly supportsResume?: boolean
+
   /**
    * Controls how the idle clock + state-on-input behaves. **Default: true**.
    *

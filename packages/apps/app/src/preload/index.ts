@@ -228,6 +228,9 @@ const api: ElectronAPI = {
   dialog: {
     showOpenDialog: (options) => ipcRenderer.invoke('dialog:showOpenDialog', options)
   },
+  instance: {
+    getId: () => ipcRenderer.invoke('instance:getId') as Promise<string>
+  },
   app: {
     getProtocolClientStatus: () => ipcRenderer.invoke('app:get-protocol-client-status'),
     getVersion: () => ipcRenderer.invoke('app:getVersion'),

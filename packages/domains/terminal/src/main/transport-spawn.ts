@@ -51,6 +51,24 @@ export function tmuxSessionNameFor(sessionId: string): string {
 }
 
 /**
+ * Setter for the SlayZone instance id used as the `@slz-instance-id` tag on
+ * remote tmux sessions. Set once at app boot via `setSlayzoneInstanceId(id)`
+ * from `apps/app/src/main/index.ts`. When unset (test harness / non-Electron
+ * test runs), tagging is skipped — sessions are still created, just untagged.
+ */
+let cachedInstanceId: string | null = null
+export function setSlayzoneInstanceId(id: string | null): void {
+  cachedInstanceId = id && id.length > 0 ? id : null
+}
+
+export interface SessionTagOpts {
+  taskId: string
+  tabId: string | null
+  mode: string
+  createdAtIso: string
+}
+
+/**
  * Wrap a spawn for docker/ssh execution contexts.
  *
  * - host: returns null (caller spawns locally)
@@ -73,7 +91,8 @@ export function buildTransportSpawn(
   adapterEnv: Record<string, string>,
   mcpEnv: Record<string, string>,
   sessionId?: string,
-  mcpPortOverride?: number
+  mcpPortOverride?: number,
+  tagOpts?: SessionTagOpts
 ): TransportSpawn | null {
   if (!ctx || ctx.type === 'host') return null
 
@@ -115,12 +134,33 @@ export function buildTransportSpawn(
     // Agent shells inside this tmux session will route every `slay <cmd>` back
     // to the host's real CLI via the reverse-forwarded MCP loopback.
     innerParts.push(`export PATH="$HOME/.slayzone/bin:$PATH"`)
+
+    // Tag the tmux session with SlayZone metadata BEFORE bash takes over via
+    // exec. The wrapper resolves to the SlayZone socket; -q swallows errors
+    // on first-spawn race; `|| true` makes any single failure non-fatal.
+    if (sessionId && tagOpts) {
+      const tmuxName = tmuxSessionNameFor(sessionId)
+      const tag = (key: string, val: string): string =>
+        `~/.slayzone/bin/slz-tmux set-option -t ${quoteForShell(tmuxName)} -q ${key} ${quoteForShell(val)} || true`
+      innerParts.push(tag('@slz-task-id', tagOpts.taskId))
+      if (tagOpts.tabId) innerParts.push(tag('@slz-tab-id', tagOpts.tabId))
+      if (cachedInstanceId) innerParts.push(tag('@slz-instance-id', cachedInstanceId))
+      innerParts.push(tag('@slz-mode', tagOpts.mode))
+      innerParts.push(tag('@slz-created', tagOpts.createdAtIso))
+    }
     innerParts.push(`exec ${quoteForShell(remoteShell)} -i -l`)
     const innerScript = innerParts.join(' && ')
 
     if (sessionId) {
       const tmuxName = tmuxSessionNameFor(sessionId)
-      sshArgs.push(`tmux new-session -A -s ${quoteForShell(tmuxName)} ${quoteForShell(innerScript)}`)
+      // Use ~/.slayzone/bin/slz-tmux (installed by remote-hook-installer)
+      // so the new-session lands on the SlayZone-owned `-L slayzone` socket
+      // with the SlayZone plugin config loaded. setupRemoteAgentHooks runs
+      // before the PTY actually spawns (see pty-manager.ts:860), so the
+      // wrapper is present by the time this command executes.
+      sshArgs.push(
+        `~/.slayzone/bin/slz-tmux new-session -A -s ${quoteForShell(tmuxName)} ${quoteForShell(innerScript)}`
+      )
     } else {
       sshArgs.push(innerScript)
     }

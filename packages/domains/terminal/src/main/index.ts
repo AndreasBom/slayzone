@@ -36,6 +36,7 @@ export {
   transitionStateFromHook,
   markSessionActiveFromHook
 } from './pty-manager'
+export { setSlayzoneInstanceId } from './transport-spawn'
 export { resolveUserShell, getShellStartupArgs, whichBinary, getEnrichedPath } from './shell-env'
 export { syncTerminalModes } from './startup-sync'
 export {
