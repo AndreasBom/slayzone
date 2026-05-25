@@ -323,10 +323,36 @@ async function installTmuxResilience(opts: TmuxResilienceOpts): Promise<void> {
     : 'while ! mkdir "$HOME/.slayzone/install.lock.d" 2>/dev/null; do sleep 1; done; ' +
       'trap \'rmdir "$HOME/.slayzone/install.lock.d" 2>/dev/null\' EXIT INT TERM; '
 
-  // tpm + resurrect + continuum clone, with idempotent "fetch+checkout if
-  // .git exists, else clone" guards. continuum has no stable tag (latest main).
+  // ESSENTIAL: write slayzone.conf and the slz-tmux wrapper FIRST. These two
+  // files are what transport-spawn invokes on every PTY spawn (`~/.slayzone/bin/slz-tmux
+  // new-session …`). If the wrapper isn't on disk, every subsequent ssh spawn
+  // fails with "/home/<user>/.slayzone/bin/slz-tmux: no such file or directory"
+  // — plugin install can fail (network, missing git, etc.) and we still need
+  // basic tmux to work, just without scrollback persistence.
+  try {
+    await runSshStdin(
+      sshExecutable,
+      target,
+      'mkdir -p "$HOME/.tmux" && cat > "$HOME/.tmux/slayzone.conf"',
+      SLAYZONE_TMUX_CONF
+    )
+    await runSshStdin(
+      sshExecutable,
+      target,
+      'mkdir -p "$HOME/.slayzone/bin" && cat > "$HOME/.slayzone/bin/slz-tmux" && chmod 0755 "$HOME/.slayzone/bin/slz-tmux"',
+      SLZ_TMUX_WRAPPER
+    )
+  } catch (err) {
+    skipDiag(`conf-or-wrapper-write-failed: ${(err as Error).message}`)
+    return
+  }
+
+  // OPTIONAL: tpm + resurrect + continuum clone, with idempotent
+  // "fetch+checkout if .git exists, else clone" guards. continuum has no stable
+  // tag (latest main). Failure → log + skip plugin install + skip migration
+  // marker so next spawn retries.
   const cloneScript = `set -e
-mkdir -p "$HOME/.tmux/plugins" "$HOME/.slayzone/bin"
+mkdir -p "$HOME/.tmux/plugins"
 ${lockGuard}clone_or_update() {
   dir="$1"
   url="$2"
@@ -348,6 +374,7 @@ clone_or_update "$HOME/.tmux/plugins/tpm" https://github.com/tmux-plugins/tpm ${
 clone_or_update "$HOME/.tmux/plugins/tmux-resurrect" https://github.com/tmux-plugins/tmux-resurrect ${RESURRECT_VERSION}
 clone_or_update "$HOME/.tmux/plugins/tmux-continuum" https://github.com/tmux-plugins/tmux-continuum ""
 `
+  let pluginsCloned = false
   try {
     await runSsh(
       sshExecutable,
@@ -355,46 +382,33 @@ clone_or_update "$HOME/.tmux/plugins/tmux-continuum" https://github.com/tmux-plu
       [],
       hasUtilLinuxFlock ? `${lockCmd} sh -c ${shellQuote(cloneScript)}` : cloneScript
     )
+    pluginsCloned = true
   } catch (err) {
     skipDiag(`plugin-clone-failed: ${(err as Error).message}`)
-    return
+    // Wrapper + conf are still in place; fall through to migration without
+    // running headless plugin install. The next spawn-driven re-invoke can
+    // retry the clones once network is back.
   }
 
-  // Write slayzone.conf and the slz-tmux wrapper.
-  try {
-    await runSshStdin(
-      sshExecutable,
-      target,
-      'mkdir -p "$HOME/.tmux" && cat > "$HOME/.tmux/slayzone.conf"',
-      SLAYZONE_TMUX_CONF
-    )
-    await runSshStdin(
-      sshExecutable,
-      target,
-      'mkdir -p "$HOME/.slayzone/bin" && cat > "$HOME/.slayzone/bin/slz-tmux" && chmod 0755 "$HOME/.slayzone/bin/slz-tmux"',
-      SLZ_TMUX_WRAPPER
-    )
-  } catch (err) {
-    skipDiag(`conf-or-wrapper-write-failed: ${(err as Error).message}`)
-    return
-  }
-
-  // Headless plugin install via the wrapper, idempotent: kill any stale
-  // _slz_install pane, then `new-session -A` so a still-living one attaches
-  // rather than failing.
-  try {
-    await runSsh(
-      sshExecutable,
-      target,
-      [],
-      '"$HOME/.slayzone/bin/slz-tmux" kill-session -t _slz_install 2>/dev/null || true; ' +
-        '"$HOME/.slayzone/bin/slz-tmux" new-session -A -d -s _slz_install ' +
-        "'~/.tmux/plugins/tpm/bin/install_plugins; ~/.slayzone/bin/slz-tmux kill-server' " +
-        '|| true'
-    )
-  } catch {
-    // Plugin install failure doesn't unwind the install — the wrapper +
-    // conf still let basic tmux work, just without auto-save.
+  // Headless plugin install via the wrapper. Only runs when plugin clones
+  // succeeded — otherwise tpm isn't on disk and install_plugins would no-op
+  // (or fail). Idempotent: kill any stale _slz_install pane, then
+  // `new-session -A` so a still-living one attaches rather than failing.
+  if (pluginsCloned) {
+    try {
+      await runSsh(
+        sshExecutable,
+        target,
+        [],
+        '"$HOME/.slayzone/bin/slz-tmux" kill-session -t _slz_install 2>/dev/null || true; ' +
+          '"$HOME/.slayzone/bin/slz-tmux" new-session -A -d -s _slz_install ' +
+          "'~/.tmux/plugins/tpm/bin/install_plugins; ~/.slayzone/bin/slz-tmux kill-server' " +
+          '|| true'
+      )
+    } catch {
+      // Plugin install failure doesn't unwind the install — wrapper + conf
+      // still let basic tmux work, just without auto-save.
+    }
   }
 
   // CC1c migration: surface or kill legacy default-socket slz-* sessions.
@@ -448,15 +462,20 @@ clone_or_update "$HOME/.tmux/plugins/tmux-continuum" https://github.com/tmux-plu
   }
 
   // Marker LAST so a partial-install never skips re-running the migration.
-  try {
-    await runSsh(
-      sshExecutable,
-      target,
-      [],
-      `touch ${shellQuote(migrationMarker)}`
-    )
-  } catch {
-    /* marker write failure: next spawn re-runs everything, harmless */
+  // Only written when plugins were also cloned — if clone failed, leaving
+  // the marker absent makes the next spawn retry the clones (after network
+  // returns, etc.). Wrapper + conf are already in place either way.
+  if (pluginsCloned) {
+    try {
+      await runSsh(
+        sshExecutable,
+        target,
+        [],
+        `touch ${shellQuote(migrationMarker)}`
+      )
+    } catch {
+      /* marker write failure: next spawn re-runs everything, harmless */
+    }
   }
 
   recordDiagnosticEvent({
@@ -466,7 +485,8 @@ clone_or_update "$HOME/.tmux/plugins/tmux-continuum" https://github.com/tmux-plu
     payload: {
       target,
       tmuxVersion: `${version.major}.${version.minor}`,
-      utilLinuxFlock: hasUtilLinuxFlock
+      utilLinuxFlock: hasUtilLinuxFlock,
+      pluginsCloned
     }
   })
 }
