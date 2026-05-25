@@ -192,8 +192,9 @@ To inspect from any shell:
 
 ```sh
 python -c "
-import sqlite3, json
-con = sqlite3.connect('C:/Users/abom/AppData/Roaming/slayzone/slayzone.dev.diagnostics.sqlite')
+import os, sqlite3, json
+db = os.path.join(os.environ['APPDATA'], 'slayzone', 'slayzone.dev.diagnostics.sqlite')
+con = sqlite3.connect(db)
 con.row_factory = sqlite3.Row
 cur = con.execute(\"SELECT ts_ms, event, payload_json FROM diagnostics_events WHERE event LIKE 'pty.%' ORDER BY ts_ms DESC LIMIT 10\")
 for r in cur.fetchall():
