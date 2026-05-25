@@ -152,6 +152,55 @@ const CONVERSATION_ID_CAPTURE_EVENT: Record<string, string> = {
   antigravity: 'PreInvocation'
 }
 
+/**
+ * Agents whose CLI supports `--resume <id>` (or equivalent). Mirrors the
+ * `TerminalAdapter.supportsResume` flag (see `adapters/types.ts`). Kept here
+ * as a constant to avoid pulling the adapter registry into the REST handler.
+ *
+ * Used by the `SessionEnd` clear path: when one of these adapters emits
+ * `SessionEnd` (clean `/exit`), we null out `provider_config[mode].conversationId`
+ * so the next spawn starts fresh instead of resuming a closed conversation.
+ */
+const SUPPORTS_RESUME_AGENTS: ReadonlySet<string> = new Set([
+  'claude-code',
+  'codex',
+  'qwen-code'
+])
+
+/**
+ * Clear `provider_config[agentId].conversationId` on clean session end so the
+ * next spawn doesn't auto-resume into a `/exit`-closed conversation.
+ *
+ * Triggered only when an adapter that supportsResume emits `SessionEnd`.
+ * `Stop` is intentionally NOT touched — it fires on every turn boundary; using
+ * it here would silently clear the resume id between every user message.
+ */
+async function clearConversationIdOnSessionEnd(
+  deps: RestApiDeps,
+  agentId: string,
+  taskId: string
+): Promise<void> {
+  try {
+    const task = await getTaskOp(deps.db, taskId)
+    if (!task) return
+    if (getProviderConversationId(task.provider_config, agentId) == null) return
+    updateTask(deps.db, {
+      id: taskId,
+      providerConfig: { [agentId]: { conversationId: null } }
+    })
+    deps.notifyRenderer()
+    recordDiagnosticEvent({
+      level: 'info',
+      source: 'main',
+      event: 'pty.resume_cleared_session_end',
+      taskId,
+      payload: { agentId }
+    })
+  } catch {
+    // Best-effort.
+  }
+}
+
 /** Dispatch to the per-agent raw-hook-event → TerminalState mapper. */
 function hookToTerminalState(
   agentId: string,
@@ -273,6 +322,18 @@ export function registerAgentHookRoute(
       timestamp: Date.now()
     }
     broadcastToWindows('agent:lifecycle', event)
+
+    // Clean exit clear: if the agent emits SessionEnd and it supports resume,
+    // null the stored conversationId so the next spawn starts fresh instead of
+    // auto-resuming a `/exit`-closed conversation. Stop is NOT touched — it
+    // fires every turn boundary, clearing there would silently lose the id.
+    if (
+      parsed.data.hookEvent === 'SessionEnd' &&
+      SUPPORTS_RESUME_AGENTS.has(parsed.data.agentId) &&
+      parsed.data.taskId
+    ) {
+      await clearConversationIdOnSessionEnd(deps, parsed.data.agentId, parsed.data.taskId)
+    }
 
     // PRIMARY resume-id capture — persist the CLI session id into
     // provider_config[agentId].conversationId for the capture agents. Gated to

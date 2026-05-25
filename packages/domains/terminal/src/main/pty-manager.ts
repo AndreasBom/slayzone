@@ -1412,6 +1412,21 @@ export async function createPty(
               }
             })
             if (!win.isDestroyed() && detectedError.code === 'SESSION_NOT_FOUND') {
+              recordDiagnosticEvent({
+                level: 'warn',
+                source: 'pty',
+                event: 'pty.resume_failed',
+                sessionId,
+                taskId: taskIdFromSessionId(sessionId),
+                payload: { reason: 'detect-error-stream' }
+              })
+              recordDiagnosticEvent({
+                level: 'info',
+                source: 'pty',
+                event: 'pty.resume_fallback_to_fresh',
+                sessionId,
+                taskId: taskIdFromSessionId(sessionId)
+              })
               try {
                 win.webContents.send('pty:session-not-found', sessionId)
               } catch {
@@ -1608,6 +1623,21 @@ export async function createPty(
                     ? 'resume_nonzero_exit_no_output'
                     : 'resume_nonzero_exit_with_output'
               }
+            })
+            recordDiagnosticEvent({
+              level: 'warn',
+              source: 'pty',
+              event: 'pty.resume_failed',
+              sessionId,
+              taskId: taskIdFromSessionId(sessionId),
+              payload: { reason: 'fast-exit-after-resume', exitCode }
+            })
+            recordDiagnosticEvent({
+              level: 'info',
+              source: 'pty',
+              event: 'pty.resume_fallback_to_fresh',
+              sessionId,
+              taskId: taskIdFromSessionId(sessionId)
             })
             try {
               win.webContents.send('pty:session-not-found', sessionId)
